@@ -1,6 +1,7 @@
 import cv2
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +9,7 @@ from ultralytics import YOLO
 import numpy as np
 import time
 import os
+import shutil
 from datetime import datetime
 import json
 import threading
@@ -27,7 +29,31 @@ except ImportError:
     FACE_REC_AVAILABLE = False
     print("face_recognition not installed. Face ID disabled.")
 
-app = FastAPI()
+def startup_runtime():
+    try:
+        startup_sources = [{"name": c.name, "source": c.source} for c in getattr(current_settings, "cameraSources", [])]
+    except Exception:
+        startup_sources = []
+    camera_manager.replace_all(startup_sources, fallback_webcam=True)
+    training_worker.start()
+    t = threading.Thread(target=video_loop, daemon=True)
+    t.start()
+
+def shutdown_runtime():
+    try:
+        training_worker.stop()
+    except Exception:
+        pass
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    startup_runtime()
+    try:
+        yield
+    finally:
+        shutdown_runtime()
+
+app = FastAPI(lifespan=lifespan)
 
 if not os.path.exists("alerts"):
     os.makedirs("alerts")
@@ -53,6 +79,19 @@ def init_db():
                      (id TEXT PRIMARY KEY, message TEXT, timestamp TEXT, image_path TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS faces
                      (id TEXT PRIMARY KEY, name TEXT, type TEXT, encoding BLOB)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS training_datasets
+                     (id TEXT PRIMARY KEY, name TEXT, source_type TEXT, local_path TEXT, archive_path TEXT,
+                      detected_format TEXT, status TEXT, sample_count INTEGER, class_count INTEGER,
+                      created_at TEXT, notes TEXT, task_type TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS training_jobs
+                     (id TEXT PRIMARY KEY, dataset_id TEXT, base_model TEXT, task_type TEXT, status TEXT,
+                      progress REAL, phase TEXT, params_json TEXT, device TEXT, created_at TEXT,
+                      started_at TEXT, finished_at TEXT, error TEXT, metrics_json TEXT, cancel_requested INTEGER DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS training_artifacts
+                     (id TEXT PRIMARY KEY, job_id TEXT, kind TEXT, path TEXT, metrics_json TEXT,
+                      created_at TEXT, promoted INTEGER DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS training_logs
+                     (id TEXT PRIMARY KEY, job_id TEXT, ts TEXT, level TEXT, message TEXT)''')
         conn.commit()
         conn.close()
         print("Database initialized.")
@@ -384,6 +423,9 @@ alert_payload = None # Initialize
 lock = threading.Lock()
 clients = []
 camera_io_lock = threading.Lock()
+ws_client_count = 0
+last_ws_payload = None
+alert_dedupe: dict[tuple[str, str, str], float] = {}
 
 # --- Camera Management ---
 class CameraManager:
@@ -391,46 +433,55 @@ class CameraManager:
         self.cameras = {}
         self.lock = threading.Lock()
 
+    def _open_capture(self, source):
+        try:
+            src = int(source)
+            is_index = True
+        except:
+            src = source
+            is_index = False
+
+        if is_index and os.name == 'nt':
+            cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+        else:
+            if isinstance(src, str) and src.lower().startswith(("rtsp://", "rtsps://")):
+                cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+            else:
+                cap = cv2.VideoCapture(src)
+        return cap
+
     def add_camera(self, source, name):
+        cap = self._open_capture(source)
+        ok = cap.isOpened()
+        error = None if ok else "Could not open camera source"
+        if ok:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
         with self.lock:
             cam_id = str(uuid.uuid4())
-            
-            # Try to convert source to int if it's a number (for webcam index)
-            try:
-                src = int(source)
-                is_index = True
-            except:
-                src = source
-                is_index = False
-
-            # Use CAP_DSHOW on Windows for webcams to improve compatibility
-            if is_index and os.name == 'nt':
-                cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
-            else:
-                # Prefer FFmpeg for RTSP URLs (more reliable)
-                if isinstance(src, str) and src.lower().startswith(("rtsp://", "rtsps://")):
-                    cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
-                else:
-                    cap = cv2.VideoCapture(src)
-                
-            if cap.isOpened():
-                # Set resolution
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                
+            if ok:
                 self.cameras[cam_id] = {
                     "cap": cap,
                     "name": name,
                     "source": source,
                     "status": "active",
                     "roi_entry_times": {},
-                    "last_alert_time": 0
+                    "last_alert_time": 0,
+                    "last_frame_ts": None,
+                    "last_error": None,
+                    "retry_after": 0.0,
+                    "last_objects": [],
                 }
                 print(f"Kamera eklendi: {name} ({source}) ID: {cam_id}")
-                return {"id": cam_id, "status": "connected"}
-            else:
-                print(f"Kamera açılamadı: {source}")
-                return {"id": None, "status": "failed"}
+                return {"id": cam_id, "status": "connected", "lastError": None}
+
+        try:
+            cap.release()
+        except Exception:
+            pass
+        print(f"Kamera açılamadı: {source}")
+        return {"id": None, "status": "failed", "lastError": error}
 
     def replace_all(self, sources: list[dict], fallback_webcam: bool = True):
         # sources: [{ "name": "...", "source": "..." }, ...]
@@ -476,7 +527,9 @@ class CameraManager:
                 "id": k, 
                 "name": v["name"], 
                 "source": v["source"], 
-                "status": "active" if v["cap"].isOpened() else "error"
+                "status": v.get("status", "active" if v["cap"].isOpened() else "error"),
+                "lastError": v.get("last_error"),
+                "lastFrameTs": v.get("last_frame_ts")
             } for k, v in self.cameras.items()]
 
 camera_manager = CameraManager()
@@ -493,10 +546,19 @@ class CameraConfigInput(BaseModel):
 # --- Playback (upload + offline analysis jobs) ---
 UPLOADS_DIR = "uploads"
 PLAYBACKS_DIR = "playbacks"
+TRAINING_UPLOADS_DIR = "training_uploads"
+TRAINING_WORKSPACE_DIR = "training_workspace"
+TRAINING_ARTIFACTS_DIR = "training_artifacts"
 if not os.path.exists(UPLOADS_DIR):
     os.makedirs(UPLOADS_DIR)
 if not os.path.exists(PLAYBACKS_DIR):
     os.makedirs(PLAYBACKS_DIR)
+if not os.path.exists(TRAINING_UPLOADS_DIR):
+    os.makedirs(TRAINING_UPLOADS_DIR)
+if not os.path.exists(TRAINING_WORKSPACE_DIR):
+    os.makedirs(TRAINING_WORKSPACE_DIR)
+if not os.path.exists(TRAINING_ARTIFACTS_DIR):
+    os.makedirs(TRAINING_ARTIFACTS_DIR)
 
 playback_jobs_lock = threading.Lock()
 playback_jobs: dict[str, dict] = {}
@@ -520,6 +582,388 @@ class PlaybackUploadConfig(BaseModel):
     sampleFps: float = 2.0
     # Optional: stop after N seconds of video (0 = full video)
     maxSeconds: float = 0.0
+
+class RegisterTrainingDatasetPathInput(BaseModel):
+    path: str
+    name: str
+    taskType: str = "detect"
+    notes: str = ""
+
+class CreateTrainingJobInput(BaseModel):
+    datasetId: str
+    baseModel: str = "yolov8n.pt"
+    taskType: str = "detect"
+    epochs: int = 30
+    imgsz: int = 640
+    batch: int = 8
+    device: str = "cpu"
+    validationSplit: float = 0.2
+    patience: int = 10
+
+class TrainingDatasetResponse(BaseModel):
+    id: str
+    name: str
+    sourceType: str
+    localPath: str | None = None
+    archivePath: str | None = None
+    detectedFormat: str | None = None
+    status: str
+    sampleCount: int = 0
+    classCount: int = 0
+    createdAt: str
+    notes: str | None = None
+    taskType: str | None = None
+
+class TrainingJobResponse(BaseModel):
+    id: str
+    datasetId: str
+    datasetName: str | None = None
+    baseModel: str
+    taskType: str
+    status: str
+    progress: float = 0.0
+    phase: str = ""
+    device: str = "cpu"
+    createdAt: str
+    startedAt: str | None = None
+    finishedAt: str | None = None
+    params: dict | None = None
+    metrics: dict | None = None
+    error: str | None = None
+
+class TrainingArtifactResponse(BaseModel):
+    id: str
+    jobId: str
+    kind: str
+    path: str
+    createdAt: str
+    promoted: bool = False
+    metrics: dict | None = None
+
+class TrainingLogResponse(BaseModel):
+    id: str
+    jobId: str
+    ts: str
+    level: str
+    message: str
+
+def db_connect(row_factory: bool = False):
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+def row_to_training_dataset(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "sourceType": row["source_type"],
+        "localPath": row["local_path"],
+        "archivePath": row["archive_path"],
+        "detectedFormat": row["detected_format"],
+        "status": row["status"],
+        "sampleCount": int(row["sample_count"] or 0),
+        "classCount": int(row["class_count"] or 0),
+        "createdAt": row["created_at"],
+        "notes": row["notes"],
+        "taskType": row["task_type"],
+    }
+
+def row_to_training_job(row) -> dict:
+    params = json.loads(row["params_json"]) if row["params_json"] else None
+    metrics = json.loads(row["metrics_json"]) if row["metrics_json"] else None
+    return {
+        "id": row["id"],
+        "datasetId": row["dataset_id"],
+        "datasetName": row["dataset_name"],
+        "baseModel": row["base_model"],
+        "taskType": row["task_type"],
+        "status": row["status"],
+        "progress": float(row["progress"] or 0.0),
+        "phase": row["phase"] or "",
+        "device": row["device"] or "cpu",
+        "createdAt": row["created_at"],
+        "startedAt": row["started_at"],
+        "finishedAt": row["finished_at"],
+        "params": params,
+        "metrics": metrics,
+        "error": row["error"],
+    }
+
+def row_to_training_artifact(row) -> dict:
+    return {
+        "id": row["id"],
+        "jobId": row["job_id"],
+        "kind": row["kind"],
+        "path": row["path"],
+        "createdAt": row["created_at"],
+        "promoted": bool(row["promoted"]),
+        "metrics": json.loads(row["metrics_json"]) if row["metrics_json"] else None,
+    }
+
+def detect_dataset_format(dataset_path: str) -> tuple[str, int, int]:
+    data_yaml = os.path.join(dataset_path, "data.yaml")
+    data_yml = os.path.join(dataset_path, "data.yml")
+    yaml_path = data_yaml if os.path.exists(data_yaml) else data_yml if os.path.exists(data_yml) else None
+
+    class_count = 0
+    sample_count = 0
+    image_root = None
+
+    if yaml_path:
+        try:
+            with open(yaml_path, "r", encoding="utf-8", errors="ignore") as f:
+                raw = f.read()
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("nc:"):
+                    try:
+                        class_count = int(stripped.split(":", 1)[1].strip())
+                    except Exception:
+                        pass
+            image_root = os.path.join(dataset_path, "images")
+            if os.path.isdir(image_root):
+                for _, _, files in os.walk(image_root):
+                    sample_count += sum(1 for name in files if name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")))
+            return "yolo", sample_count, class_count
+        except Exception:
+            pass
+
+    sample_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".mp4", ".mov", ".avi", ".mkv")
+    for _, _, files in os.walk(dataset_path):
+        sample_count += sum(1 for name in files if name.lower().endswith(sample_exts))
+
+    if sample_count > 0:
+        return "generic_media", sample_count, class_count
+    return "unknown", 0, 0
+
+def upsert_training_dataset(*, dataset_id: str, name: str, source_type: str, local_path: str | None,
+                            archive_path: str | None, detected_format: str | None, status: str,
+                            sample_count: int, class_count: int, created_at: str, notes: str, task_type: str):
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute(
+        """INSERT OR REPLACE INTO training_datasets
+           (id, name, source_type, local_path, archive_path, detected_format, status, sample_count, class_count, created_at, notes, task_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (dataset_id, name, source_type, local_path, archive_path, detected_format, status, sample_count, class_count, created_at, notes, task_type),
+    )
+    conn.commit()
+    conn.close()
+
+def get_training_dataset_or_404(dataset_id: str) -> sqlite3.Row:
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM training_datasets WHERE id = ?", (dataset_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return row
+
+def append_training_log(job_id: str, level: str, message: str):
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO training_logs (id, job_id, ts, level, message) VALUES (?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), job_id, datetime.now().isoformat(), level, message),
+    )
+    conn.commit()
+    conn.close()
+
+def update_training_job(job_id: str, **fields):
+    if not fields:
+        return
+    assignments = []
+    values = []
+    for key, value in fields.items():
+        assignments.append(f"{key} = ?")
+        values.append(value)
+    values.append(job_id)
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute(f"UPDATE training_jobs SET {', '.join(assignments)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+def get_training_job_row(job_id: str) -> sqlite3.Row | None:
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute(
+        """SELECT j.*, d.name AS dataset_name
+           FROM training_jobs j
+           LEFT JOIN training_datasets d ON d.id = j.dataset_id
+           WHERE j.id = ?""",
+        (job_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def create_training_artifact(job_id: str, kind: str, path: str, metrics: dict | None = None):
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO training_artifacts (id, job_id, kind, path, metrics_json, created_at, promoted)
+           VALUES (?, ?, ?, ?, ?, ?, 0)""",
+        (str(uuid.uuid4()), job_id, kind, path, json.dumps(metrics or {}), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+class TrainingWorker:
+    def __init__(self):
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.wake_event = threading.Event()
+
+    def start(self):
+        if self.thread and self.thread.is_alive():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.wake_event.set()
+
+    def notify(self):
+        self.wake_event.set()
+
+    def run(self):
+        while not self.stop_event.is_set():
+            job = self._next_job()
+            if not job:
+                self.wake_event.wait(timeout=2.0)
+                self.wake_event.clear()
+                continue
+            self._execute_job(job)
+
+    def _next_job(self):
+        conn = db_connect(row_factory=True)
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, dataset_id, base_model, task_type, params_json, device FROM training_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+        )
+        row = c.fetchone()
+        conn.close()
+        return row
+
+    def _execute_job(self, row):
+        job_id = row["id"]
+        params = json.loads(row["params_json"]) if row["params_json"] else {}
+        update_training_job(
+            job_id,
+            status="running",
+            progress=0.05,
+            phase="Preparing dataset",
+            started_at=datetime.now().isoformat(),
+            error=None,
+        )
+        append_training_log(job_id, "INFO", "Training job started.")
+
+        dataset = get_training_dataset_or_404(row["dataset_id"])
+        dataset_path = dataset["local_path"]
+        if not dataset_path or not os.path.isdir(dataset_path):
+            update_training_job(
+                job_id,
+                status="failed",
+                progress=1.0,
+                phase="Failed",
+                finished_at=datetime.now().isoformat(),
+                error="Dataset path is missing or invalid.",
+            )
+            append_training_log(job_id, "ERROR", "Dataset path is missing or invalid.")
+            return
+
+        try:
+            epochs = int(params.get("epochs", 30))
+            imgsz = int(params.get("imgsz", 640))
+            batch = int(params.get("batch", 8))
+            validation_split = float(params.get("validationSplit", 0.2))
+            patience = int(params.get("patience", 10))
+            device = str(row["device"] or "cpu")
+
+            data_yaml = os.path.join(dataset_path, "data.yaml")
+            if not os.path.exists(data_yaml):
+                data_yaml = os.path.join(dataset_path, "data.yml")
+
+            if not os.path.exists(data_yaml):
+                raise RuntimeError("Training currently requires a YOLO dataset with data.yaml or data.yml.")
+
+            job_out_dir = os.path.join(TRAINING_WORKSPACE_DIR, job_id)
+            os.makedirs(job_out_dir, exist_ok=True)
+
+            update_training_job(job_id, progress=0.15, phase="Loading model")
+            append_training_log(job_id, "INFO", f"Loading base model {row['base_model']}.")
+            model = YOLO(row["base_model"])
+
+            update_training_job(job_id, progress=0.25, phase="Training")
+            append_training_log(
+                job_id,
+                "INFO",
+                f"Starting training with epochs={epochs}, imgsz={imgsz}, batch={batch}, device={device}, valSplit={validation_split}.",
+            )
+
+            results = model.train(
+                data=data_yaml,
+                epochs=epochs,
+                imgsz=imgsz,
+                batch=batch,
+                device=device,
+                patience=patience,
+                project=TRAINING_WORKSPACE_DIR,
+                name=job_id,
+                exist_ok=True,
+                val=True,
+            )
+
+            best_path = None
+            try:
+                best_path = getattr(results, "save_dir", None)
+                if best_path:
+                    best_path = os.path.join(str(best_path), "weights", "best.pt")
+            except Exception:
+                best_path = None
+
+            if not best_path or not os.path.exists(best_path):
+                raise RuntimeError("Training finished but no best.pt artifact was produced.")
+
+            promoted_path = os.path.join(TRAINING_ARTIFACTS_DIR, f"{job_id}_best.pt")
+            shutil.copy2(best_path, promoted_path)
+
+            metrics = {
+                "epochs": epochs,
+                "imgsz": imgsz,
+                "batch": batch,
+                "validationSplit": validation_split,
+                "patience": patience,
+            }
+            create_training_artifact(job_id, "best_weights", promoted_path, metrics)
+
+            update_training_job(
+                job_id,
+                status="completed",
+                progress=1.0,
+                phase="Completed",
+                finished_at=datetime.now().isoformat(),
+                metrics_json=json.dumps(metrics),
+                error=None,
+            )
+            append_training_log(job_id, "INFO", f"Training completed. Artifact saved to {promoted_path}.")
+        except Exception as e:
+            update_training_job(
+                job_id,
+                status="failed",
+                progress=1.0,
+                phase="Failed",
+                finished_at=datetime.now().isoformat(),
+                error=str(e),
+            )
+            append_training_log(job_id, "ERROR", str(e))
+
+training_worker = TrainingWorker()
 
 def create_db_alert(message: str, timestamp: str, image_path: str):
     conn = sqlite3.connect(DB_NAME)
@@ -719,13 +1163,242 @@ async def get_playback_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     return PlaybackJobStatus(**{k: j.get(k) for k in PlaybackJobStatus.model_fields.keys()})
 
+@app.post("/training/datasets/upload", response_model=TrainingDatasetResponse)
+async def upload_training_dataset(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    taskType: str = Form("detect"),
+    notes: str = Form(""),
+):
+    dataset_id = str(uuid.uuid4())
+    safe_name = (file.filename or f"{dataset_id}.zip").replace("/", "_").replace("\\", "_")
+    archive_path = os.path.join(TRAINING_UPLOADS_DIR, f"{dataset_id}_{safe_name}")
+    extract_dir = os.path.join(TRAINING_WORKSPACE_DIR, f"dataset_{dataset_id}")
+
+    with open(archive_path, "wb") as f:
+        f.write(await file.read())
+
+    os.makedirs(extract_dir, exist_ok=True)
+    extracted = False
+    try:
+        shutil.unpack_archive(archive_path, extract_dir)
+        extracted = True
+    except Exception:
+        # Leave the file as-is for unsupported archive types and let validation report it.
+        pass
+
+    detected_format, sample_count, class_count = detect_dataset_format(extract_dir) if extracted else ("unknown", 0, 0)
+    status = "ready" if detected_format == "yolo" else "uploaded" if extracted else "unsupported"
+    created_at = datetime.now().isoformat()
+    upsert_training_dataset(
+        dataset_id=dataset_id,
+        name=name,
+        source_type="upload",
+        local_path=extract_dir if extracted else None,
+        archive_path=archive_path,
+        detected_format=detected_format,
+        status=status,
+        sample_count=sample_count,
+        class_count=class_count,
+        created_at=created_at,
+        notes=notes,
+        task_type=taskType,
+    )
+    row = get_training_dataset_or_404(dataset_id)
+    return TrainingDatasetResponse(**row_to_training_dataset(row))
+
+@app.post("/training/datasets/register-path", response_model=TrainingDatasetResponse)
+async def register_training_dataset_path(payload: RegisterTrainingDatasetPathInput):
+    dataset_path = payload.path.strip()
+    if not os.path.isdir(dataset_path):
+        raise HTTPException(status_code=400, detail="Dataset path does not exist or is not a directory")
+
+    detected_format, sample_count, class_count = detect_dataset_format(dataset_path)
+    dataset_id = str(uuid.uuid4())
+    status = "ready" if detected_format == "yolo" else "needs_preprocessing" if detected_format == "generic_media" else "unsupported"
+    upsert_training_dataset(
+        dataset_id=dataset_id,
+        name=payload.name,
+        source_type="path",
+        local_path=dataset_path,
+        archive_path=None,
+        detected_format=detected_format,
+        status=status,
+        sample_count=sample_count,
+        class_count=class_count,
+        created_at=datetime.now().isoformat(),
+        notes=payload.notes,
+        task_type=payload.taskType,
+    )
+    row = get_training_dataset_or_404(dataset_id)
+    return TrainingDatasetResponse(**row_to_training_dataset(row))
+
+@app.get("/training/datasets", response_model=list[TrainingDatasetResponse])
+async def list_training_datasets():
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM training_datasets ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    return [TrainingDatasetResponse(**row_to_training_dataset(row)) for row in rows]
+
+@app.get("/training/datasets/{dataset_id}", response_model=TrainingDatasetResponse)
+async def get_training_dataset(dataset_id: str):
+    row = get_training_dataset_or_404(dataset_id)
+    return TrainingDatasetResponse(**row_to_training_dataset(row))
+
+@app.post("/training/datasets/{dataset_id}/validate")
+async def validate_training_dataset(dataset_id: str):
+    row = get_training_dataset_or_404(dataset_id)
+    dataset_path = row["local_path"]
+    if not dataset_path or not os.path.isdir(dataset_path):
+        raise HTTPException(status_code=400, detail="Dataset is not available on disk")
+
+    detected_format, sample_count, class_count = detect_dataset_format(dataset_path)
+    status = "ready" if detected_format == "yolo" else "needs_preprocessing" if detected_format == "generic_media" else "unsupported"
+    upsert_training_dataset(
+        dataset_id=row["id"],
+        name=row["name"],
+        source_type=row["source_type"],
+        local_path=row["local_path"],
+        archive_path=row["archive_path"],
+        detected_format=detected_format,
+        status=status,
+        sample_count=sample_count,
+        class_count=class_count,
+        created_at=row["created_at"],
+        notes=row["notes"] or "",
+        task_type=row["task_type"] or "detect",
+    )
+    return {"message": f"Validation complete. Status: {status}."}
+
+@app.post("/training/jobs", response_model=TrainingJobResponse)
+async def create_training_job(payload: CreateTrainingJobInput):
+    dataset = get_training_dataset_or_404(payload.datasetId)
+    if dataset["status"] not in ("ready", "validated"):
+        raise HTTPException(status_code=400, detail=f"Dataset is not ready for training: {dataset['status']}")
+
+    job_id = str(uuid.uuid4())
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute(
+        """INSERT INTO training_jobs
+           (id, dataset_id, base_model, task_type, status, progress, phase, params_json, device, created_at, started_at, finished_at, error, metrics_json, cancel_requested)
+           VALUES (?, ?, ?, ?, 'queued', 0.0, 'Queued', ?, ?, ?, NULL, NULL, NULL, NULL, 0)""",
+        (
+            job_id,
+            payload.datasetId,
+            payload.baseModel,
+            payload.taskType,
+            json.dumps(payload.model_dump()),
+            payload.device,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    append_training_log(job_id, "INFO", "Job queued from dashboard.")
+    training_worker.notify()
+    row = get_training_job_row(job_id)
+    return TrainingJobResponse(**row_to_training_job(row))
+
+@app.get("/training/jobs", response_model=list[TrainingJobResponse])
+async def list_training_jobs():
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute(
+        """SELECT j.*, d.name AS dataset_name
+           FROM training_jobs j
+           LEFT JOIN training_datasets d ON d.id = j.dataset_id
+           ORDER BY j.created_at DESC"""
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [TrainingJobResponse(**row_to_training_job(row)) for row in rows]
+
+@app.get("/training/jobs/{job_id}", response_model=TrainingJobResponse)
+async def get_training_job(job_id: str):
+    row = get_training_job_row(job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Training job not found")
+    return TrainingJobResponse(**row_to_training_job(row))
+
+@app.get("/training/jobs/{job_id}/logs", response_model=list[TrainingLogResponse])
+async def get_training_job_logs(job_id: str):
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM training_logs WHERE job_id = ? ORDER BY ts DESC LIMIT 100", (job_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [
+        TrainingLogResponse(
+            id=row["id"],
+            jobId=row["job_id"],
+            ts=row["ts"],
+            level=row["level"],
+            message=row["message"],
+        )
+        for row in rows
+    ]
+
+@app.post("/training/jobs/{job_id}/cancel")
+async def cancel_training_job(job_id: str):
+    row = get_training_job_row(job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Training job not found")
+    if row["status"] in ("completed", "failed", "cancelled"):
+        return {"message": f"Job already {row['status']}."}
+    update_training_job(job_id, status="cancelled", phase="Cancelled", finished_at=datetime.now().isoformat(), error="Cancelled from dashboard.")
+    append_training_log(job_id, "WARN", "Job cancelled from dashboard.")
+    return {"message": "Training job cancelled."}
+
+@app.get("/training/artifacts", response_model=list[TrainingArtifactResponse])
+async def list_training_artifacts():
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM training_artifacts ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    return [TrainingArtifactResponse(**row_to_training_artifact(row)) for row in rows]
+
+@app.post("/training/artifacts/{artifact_id}/promote")
+async def promote_training_artifact(artifact_id: str):
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT * FROM training_artifacts WHERE id = ?", (artifact_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    c.execute("UPDATE training_artifacts SET promoted = 0")
+    c.execute("UPDATE training_artifacts SET promoted = 1 WHERE id = ?", (artifact_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Artifact marked as promoted candidate."}
+
 @app.post("/cameras")
 async def add_new_camera(cam: CameraInput):
     result = camera_manager.add_camera(cam.source, cam.name)
     if result["id"]:
         return {"message": "Camera added", "camera": result}
     else:
-        raise HTTPException(status_code=400, detail="Failed to open camera")
+        raise HTTPException(status_code=400, detail=result.get("lastError") or "Failed to open camera")
+
+@app.post("/cameras/test")
+async def test_camera_source(cam: CameraInput):
+    cap = camera_manager._open_capture(cam.source)
+    ok = cap.isOpened()
+    if ok:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            ok = False
+    try:
+        cap.release()
+    except Exception:
+        pass
+    if not ok:
+        raise HTTPException(status_code=400, detail="Camera source could not be opened")
+    return {"message": "Camera source is reachable."}
 
 @app.get("/stats")
 def get_stats():
@@ -797,7 +1470,23 @@ class PersonState:
         self.face_checked = False
         self.face_check_time = 0
 
-person_states = {} # {track_id: PersonState}
+person_states = {} # {(camera_id, track_id): PersonState}
+
+def should_emit_alert(cam_id: str, entity_key: str, message: str, current_time: float, suppression_seconds: float = 12.0) -> bool:
+    dedupe_key = (str(cam_id), str(entity_key), str(message))
+    last_seen = alert_dedupe.get(dedupe_key, 0.0)
+    if current_time - last_seen < suppression_seconds:
+        return False
+    alert_dedupe[dedupe_key] = current_time
+    return True
+
+def cleanup_person_states_for_camera(cam_id: str, active_track_ids: set[int]):
+    stale_keys = [
+        key for key in list(person_states.keys())
+        if key[0] == cam_id and key[1] not in active_track_ids
+    ]
+    for key in stale_keys:
+        person_states.pop(key, None)
 
 def update_concealment_state_and_check_alert(frame, box, kpts, detected_objects, p_state: PersonState, current_time: float, last_alert_time: float, annotate: bool = True):
     """
@@ -957,12 +1646,45 @@ def video_loop():
                 cap = cam_data["cap"]
                 name = cam_data["name"]
                 current_time = time.time()
-                
+
+                if not cap.isOpened() and current_time >= float(cam_data.get("retry_after", 0.0)):
+                    try:
+                        reopened = camera_manager._open_capture(cam_data["source"])
+                        if reopened.isOpened():
+                            reopened.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                            reopened.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                            cam_data["cap"] = reopened
+                            cap = reopened
+                            cam_data["status"] = "active"
+                            cam_data["last_error"] = None
+                        else:
+                            cam_data["retry_after"] = current_time + 10.0
+                            cam_data["status"] = "offline"
+                            cam_data["last_error"] = "Camera source unreachable"
+                            try:
+                                reopened.release()
+                            except Exception:
+                                pass
+                    except Exception as reopen_error:
+                        cam_data["retry_after"] = current_time + 10.0
+                        cam_data["status"] = "offline"
+                        cam_data["last_error"] = str(reopen_error)
+
+                ret = False
                 if cap.isOpened():
                     with camera_io_lock:
                         ret, frame = cap.read()
-                    if not ret: frame = no_signal_frame.copy()
+                    if not ret:
+                        cam_data["status"] = "offline"
+                        cam_data["last_error"] = "No frame received"
+                        cam_data["retry_after"] = current_time + 5.0
+                        frame = no_signal_frame.copy()
+                    else:
+                        cam_data["status"] = "active"
+                        cam_data["last_error"] = None
+                        cam_data["last_frame_ts"] = datetime.now().isoformat()
                 else:
+                    cam_data["status"] = "offline"
                     frame = no_signal_frame.copy()
 
                 if cap.isOpened() and 'ret' in locals() and ret:
@@ -976,40 +1698,25 @@ def video_loop():
                     
                     if run_obj_det:
                         if model_is_specialized:
-                            # Specialized Model Logic (Direct Detection of Crime)
-                            # Assuming Custom Model Classes: 0: Normal, 1: Shoplifting/Suspicious
-                            # We set conf threshold slightly higher
                             results_obj = model_obj(frame, verbose=False, conf=0.4)
-                            
                             if len(results_obj) > 0:
                                 boxes = results_obj[0].boxes.xyxy.cpu().numpy().astype(int)
                                 clss = results_obj[0].boxes.cls.cpu().numpy().astype(int)
                                 confs = results_obj[0].boxes.conf.cpu().numpy()
-                                
+
                                 for b, c, conf in zip(boxes, clss, confs):
-                                    # If class name works, check it. Else assume non-zero is suspicious?
-                                    # Let's map dynamically
                                     class_name = model_obj.names[c].lower()
-                                    
-                                    # Keywords for alarm
                                     if "shoplift" in class_name or "suspicious" in class_name or "theft" in class_name or "fight" in class_name:
                                         label = f"{class_name.upper()} {conf:.2f}"
                                         cv2.rectangle(frame, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
                                         cv2.putText(frame, label, (b[0], b[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                                         suspicious_activity_detected = True
-                                        
-                                        if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN:
+
+                                        if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN and should_emit_alert(cam_id, f"specialized-{class_name}", f"CRIMINAL ACTIVITY: {class_name}", current_time):
                                             trigger_alert(cam_id, name, f"CRIMINAL ACTIVITY: {class_name}", frame)
                                             cam_data["last_alert_time"] = current_time
                                     else:
-                                         # Normal object/person?
-                                         cv2.rectangle(frame, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 1)
-
-                    if run_obj_det:
-                        if model_is_specialized:
-                            # ... (Existing Specialized Logic) ...
-                            results_obj = model_obj(frame, verbose=False, conf=0.4)
-                            # ...
+                                        cv2.rectangle(frame, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 1)
                         else:
                             # --- IMPROVED PRO FALLBACK LOGIC ---
                             # Use Standard YOLOv8n but filter for "Stealable" Items
@@ -1040,6 +1747,7 @@ def video_loop():
                     if results_pose[0].boxes.id is not None:
                         boxes = results_pose[0].boxes.xyxy.cpu().numpy().astype(int)
                         track_ids = results_pose[0].boxes.id.cpu().numpy().astype(int)
+                        active_track_ids = set(int(track_id) for track_id in track_ids)
                         
                         try:
                             keypoints_all = results_pose[0].keypoints.xy.cpu().numpy()
@@ -1049,10 +1757,11 @@ def video_loop():
                         for i, track_id in enumerate(track_ids):
                             box = boxes[i]
                             kpts = keypoints_all[i] if len(keypoints_all) > i else []
-                            
-                            if track_id not in person_states:
-                                person_states[track_id] = PersonState(track_id)
-                            p_state = person_states[track_id]
+                            state_key = (cam_id, int(track_id))
+
+                            if state_key not in person_states:
+                                person_states[state_key] = PersonState(track_id)
+                            p_state = person_states[state_key]
                             
                             # Init variables for safety
                             is_bending = False
@@ -1075,7 +1784,7 @@ def video_loop():
                                             match_type = known_face_types[match_index]
                                             if match_type == "blacklist":
                                                 cv2.putText(frame, f"BLACKLIST: {match_name}", (box[0], box[1]-30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
-                                                if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN:
+                                                if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN and should_emit_alert(cam_id, f"face-{track_id}", f"BLACKLIST FACE: {match_name}", current_time):
                                                     trigger_alert(cam_id, name, f"BLACKLIST FACE: {match_name}", frame)
                                                     cam_data["last_alert_time"] = current_time
                                             else:
@@ -1102,8 +1811,9 @@ def video_loop():
                                     annotate=True,
                                 )
                                 if alert_hit:
-                                    trigger_alert(cam_id, name, "THEFT CONFIRMED (Item Concealed)", frame)
-                                    cam_data["last_alert_time"] = new_last
+                                    if should_emit_alert(cam_id, f"concealment-{track_id}", "THEFT CONFIRMED (Item Concealed)", current_time):
+                                        trigger_alert(cam_id, name, "THEFT CONFIRMED (Item Concealed)", frame)
+                                        cam_data["last_alert_time"] = new_last
                             else:
                                 # If specialized model is active, we just display posing info but rely on model for alert
                                 # Or we can COMBINE them.
@@ -1117,7 +1827,7 @@ def video_loop():
                                 cv2.putText(frame, "RESTRICTED AREA ENT!", (box[0], box[1]-40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                                 # Optional: Immediate alarm for ROI entry if desired?
                                 # User said: "bölge olarak o bölgeye girince alarm calsın" -> Yes.
-                                if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN:
+                                if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN and should_emit_alert(cam_id, f"roi-{track_id}", "RESTRICTED AREA INTRUSION", current_time):
                                      trigger_alert(cam_id, name, "RESTRICTED AREA INTRUSION", frame)
                                      cam_data["last_alert_time"] = current_time
 
@@ -1142,12 +1852,14 @@ def video_loop():
                                 cv2.putText(frame, f"{duration:.1f}s", (box[0], box[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
                                 if duration > LOITERING_THRESHOLD:
-                                     if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN:
+                                     if current_time - cam_data["last_alert_time"] > ALERT_COOLDOWN and should_emit_alert(cam_id, f"loitering-{track_id}", "LOITERING SUSPICION", current_time):
                                          trigger_alert(cam_id, name, "LOITERING SUSPICION", frame)
                                          cam_data["last_alert_time"] = current_time
                             else:
                                 if track_id in cam_data["roi_entry_times"]:
                                     del cam_data["roi_entry_times"][track_id]
+
+                        cleanup_person_states_for_camera(cam_id, active_track_ids)
 
                     frame = get_heatmap_overlay(frame) 
                     
@@ -1174,10 +1886,11 @@ def video_loop():
                         "type": "multi_frame",
                         "cameras": frames_payload,
                         "alert": alert_payload,
-                        "audio": "siren" if alert_payload else None
+                        "audio": "siren" if alert_payload else None,
+                        "generatedAt": datetime.now().isoformat(),
                     }
 
-            time.sleep(0.04) 
+            time.sleep(0.04 if ws_client_count > 0 else 0.12) 
 
         except Exception as e:
             print(f"Loop Error: {e}")
@@ -1233,8 +1946,11 @@ def send_notifications(message, image_path):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global ws_client_count
     await websocket.accept()
+    ws_client_count += 1
     print("Client connected")
+    last_sent = None
     try:
         while True:
             # Send latest frame
@@ -1243,25 +1959,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 if latest_frame:
                     message_to_send = json.dumps(latest_frame)
             
-            if message_to_send:
+            if message_to_send and message_to_send != last_sent:
                 await websocket.send_text(message_to_send)
+                last_sent = message_to_send
 
-            await asyncio.sleep(0.04) 
+            await asyncio.sleep(0.08) 
     except WebSocketDisconnect:
         print("Client disconnected")
     except Exception as e:
         print(f"Error: {e}")
-
-@app.on_event("startup")
-def startup_event():
-    # Apply startup cameras from settings (fallback to webcam if empty or all fail)
-    try:
-        startup_sources = [{"name": c.name, "source": c.source} for c in getattr(current_settings, "cameraSources", [])]
-    except Exception:
-        startup_sources = []
-    camera_manager.replace_all(startup_sources, fallback_webcam=True)
-    t = threading.Thread(target=video_loop, daemon=True)
-    t.start()
+    finally:
+        ws_client_count = max(0, ws_client_count - 1)
 
 if __name__ == "__main__":
     import uvicorn

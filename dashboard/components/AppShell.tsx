@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Film,
+  BrainCircuit,
   Video,
   MapPin,
   History,
@@ -16,6 +17,7 @@ import {
 const nav = [
   { href: "/", label: "Live", icon: LayoutDashboard },
   { href: "/playback", label: "Playback", icon: Film },
+  { href: "/train", label: "Train", icon: BrainCircuit },
   { href: "/roi", label: "ROI zones", icon: MapPin },
   { href: "/cameras", label: "Cameras", icon: Video },
   { href: "/history", label: "History", icon: History },

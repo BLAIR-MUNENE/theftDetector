@@ -229,7 +229,8 @@ training_workspace/
 # Logs
 error_log.txt
 
-# Backup files
+# Settings — contains camera credentials; copy settings.example.json to create
+settings.json
 settings.backup.*.json
 
 # Test files (local dev)

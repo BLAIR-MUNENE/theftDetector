@@ -2,14 +2,31 @@
     "emailEnabled": false,
     "smtpServer": "smtp.gmail.com",
     "smtpPort": "587",
-    "senderEmail": "",
-    "senderPassword": "",
+    "senderEmail": "admin@example.com",
+    "senderPassword": "change-me-secure",
     "receiverEmail": "",
     "telegramEnabled": false,
     "telegramBotToken": "",
     "telegramChatId": "",
-    "roiPoints": [],
-    "showHeatmap": true,
+    "roiPoints": [
+        [
+            214,
+            486
+        ],
+        [
+            546,
+            186
+        ],
+        [
+            807,
+            433
+        ],
+        [
+            851,
+            473
+        ]
+    ],
+    "showHeatmap": false,
     "cameraSources": [
         {
             "name": "Test Cam 1",
@@ -27,5 +44,6 @@
             "name": "Dahua Ch 2 Sub",
             "source": "rtsp://admin2:qwerty123.@192.168.100.134:554/cam/realmonitor?channel=2&subtype=1"
         }
-    ]
+    ],
+    "activeDetectionModel": "yolov26"
 }

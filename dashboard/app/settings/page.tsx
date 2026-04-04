@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { API_BASE } from "@/lib/config";
 import type { Settings } from "@/lib/types";
-import { Loader2, Save, Send, Mail, MessageSquare, Eye } from "lucide-react";
+import { Loader2, Save, Send, Mail, MessageSquare, Eye, Cpu } from "lucide-react";
 
 const empty: Settings = {
   emailEnabled: false,
@@ -18,6 +18,7 @@ const empty: Settings = {
   roiPoints: [],
   showHeatmap: true,
   cameraSources: [],
+  activeDetectionModel: "yolov8",
 };
 
 export default function SettingsPage() {
@@ -118,6 +119,38 @@ export default function SettingsPage() {
             className="h-4 w-4 rounded border-white/20 accent-[rgb(var(--accent-orange))]"
           />
         </label>
+      </section>
+
+      {/* ── Detection Model ── */}
+      <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(255,107,0,0.15)] ring-1 ring-[rgba(255,107,0,0.3)]">
+            <Cpu className="h-4 w-4 text-[rgb(var(--accent-orange))]" />
+          </div>
+          <h2 className="text-sm font-semibold text-foreground">Detection model</h2>
+        </div>
+        <p className="text-xs text-muted">
+          Applies to live surveillance and playback analysis. Changes take effect on the next detection cycle.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          {(["yolov8", "yolov26"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setS({ ...s, activeDetectionModel: m })}
+              className={`rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                s.activeDetectionModel === m
+                  ? "border-[rgb(var(--accent-orange))]/60 bg-[rgb(var(--accent-orange))]/10 text-foreground shadow-[0_0_12px_rgba(255,107,0,0.2)]"
+                  : "border-white/[0.08] bg-black/20 text-muted hover:border-white/20 hover:text-foreground"
+              }`}
+            >
+              {m === "yolov8" ? "YOLOv8" : "YOLOv26"}
+              <span className="ml-2 text-xs opacity-60">
+                {m === "yolov8" ? "yolov8n.pt" : "yolo26n.pt"}
+              </span>
+            </button>
+          ))}
+        </div>
       </section>
 
       {/* ── Email ── */}

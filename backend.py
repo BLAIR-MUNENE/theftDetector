@@ -122,6 +122,45 @@ class SettingsModel(BaseModel):
     roiPoints: list[list[int]] = []
     showHeatmap: bool = False
     cameraSources: list[CameraSourceModel] = []
+    activeDetectionModel: str = "yolov8"
+
+# --- Model Configurations ---
+MODEL_CONFIGS: dict = {
+    "yolov8": {
+        "pose": "yolov8n-pose.pt",
+        "obj_primary": "shoplifting.pt",
+        "obj_fallback": "yolov8n.pt",
+        "specialized": True,
+    },
+    "yolov26": {
+        "pose": "yolov8n-pose.pt",
+        "obj_primary": "yolo26n.pt",
+        "obj_fallback": "yolov8n.pt",
+        "specialized": False,
+    },
+}
+
+def load_detection_models(model_name: str):
+    """Load pose and object detection models for the given model family."""
+    cfg = MODEL_CONFIGS.get(model_name, MODEL_CONFIGS["yolov8"])
+    model_pose = YOLO(cfg["pose"])
+    model_is_specialized = False
+    model_obj = None
+    try:
+        model_obj = YOLO(cfg["obj_primary"])
+        if cfg.get("specialized", False):
+            model_is_specialized = True
+            print(f"Specialized model loaded: {cfg['obj_primary']}")
+        else:
+            print(f"Detection model loaded: {cfg['obj_primary']}")
+    except Exception:
+        print(f"Primary model '{cfg['obj_primary']}' not found, using fallback '{cfg['obj_fallback']}'")
+        try:
+            model_obj = YOLO(cfg["obj_fallback"])
+        except Exception as e:
+            print(f"Fallback model also failed: {e}")
+            model_obj = None
+    return model_pose, model_obj, model_is_specialized
 
 SETTINGS_EXAMPLE_FILE = "settings.example.json"
 
@@ -1201,9 +1240,11 @@ def run_playback_job(job_id: str, video_path: str, cfg: PlaybackUploadConfig):
         if cfg.maxSeconds and cfg.maxSeconds > 0:
             max_frames = int(cfg.maxSeconds * fps)
 
-        # Load models once per job (keeps implementation simple)
-        model_pose = YOLO("yolov8n-pose.pt")
-        model_obj = YOLO("yolov8n.pt")
+        # Load models using the active detection model setting
+        _pb_model_name = current_settings.activeDetectionModel
+        model_pose, model_obj, _ = load_detection_models(_pb_model_name)
+        if model_obj is None:
+            model_obj = YOLO("yolov8n.pt")
 
         frame_idx = 0
         processed = 0
@@ -1874,34 +1915,18 @@ def check_bending(keypoints):
 # --- Updated Video Loop ---
 def video_loop():
     global roi_points, latest_frame, current_settings, alert_payload, known_face_encodings, known_face_names, known_face_types, person_states
-    
-    print("Video Loop Başlatılıyor...") 
-    model_obj = None # Fallback or specialized
-    model_is_specialized = False
-    
-    try:
-        print("Loading Pose Model...")
-        model_pose = YOLO('yolov8n-pose.pt') 
-        
-        print("Loading Theft Detection Model...")
-        try:
-            # Try to load specialized model first
-            model_obj = YOLO('shoplifting.pt')
-            model_is_specialized = True
-            print("Özel Hırsızlık Modeli Yüklendi! (shoplifting.pt)")
-        except:
-            print("Özel model bulunamadı, standart nesne takibine (yolov8n.pt) geçiliyor...")
-            try:
-                model_obj = YOLO('yolov8n.pt')
-            except Exception as e:
-                print(f"Standart Model de yüklenemedi: {e}")
-                model_obj = None
 
-        print("Modeller hazır.")
+    print("Video Loop Başlatılıyor...")
+
+    _loaded_model_name = current_settings.activeDetectionModel
+    try:
+        print(f"Loading models for: {_loaded_model_name}")
+        model_pose, model_obj, model_is_specialized = load_detection_models(_loaded_model_name)
+        print("Models ready.")
     except Exception as e:
         print(f"CRITICAL MODEL ERROR: {e}")
         with open("error_log.txt", "a") as f:
-             f.write(f"{datetime.now()}: CRITICAL LOAD ERROR: {e}\n")
+            f.write(f"{datetime.now()}: CRITICAL LOAD ERROR: {e}\n")
         return
 
     frame_count = 0
@@ -1909,12 +1934,23 @@ def video_loop():
     cv2.putText(no_signal_frame, "SINYAL YOK", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
 
     while True:
+        # Hot-swap models when activeDetectionModel setting changes
+        desired_model = current_settings.activeDetectionModel
+        if desired_model != _loaded_model_name:
+            try:
+                print(f"Switching detection model: {_loaded_model_name} → {desired_model}")
+                model_pose, model_obj, model_is_specialized = load_detection_models(desired_model)
+                _loaded_model_name = desired_model
+                print(f"Model switched to: {desired_model}")
+            except Exception as _e:
+                print(f"Model switch failed, keeping {_loaded_model_name}: {_e}")
+
         try:
             with camera_manager.lock:
                 current_cams = list(camera_manager.cameras.items())
 
-            frames_payload = [] 
-            
+            frames_payload = []
+
             # Optimization: Run Object Det every 5 frames
             run_obj_det = (frame_count % 5 == 0) and (model_obj is not None)
             

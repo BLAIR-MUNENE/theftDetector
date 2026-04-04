@@ -177,6 +177,9 @@ cython_debug/
 *.jpeg
 *.jpe
 *.png
+# Allow docs/ screenshots
+!docs/*.png
+!docs/*.jpg
 *.gif
 *.bmp
 *.webp
@@ -213,6 +216,11 @@ cython_debug/
 *.ogv
 *.asf
 
+# Runtime generated directories
+alerts/
+playbacks/
+uploads/
+
 # Node.js dependencies
 node_modules/
 
@@ -221,7 +229,9 @@ runs/
 training_artifacts/
 training_uploads/
 training_workspace/
+yolov26/yolotraining/dataset/
 *.pt
+*.zip
 
 # Database
 *.db

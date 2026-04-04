@@ -133,6 +133,19 @@ export default function TrainForm({
       {/* Config grid */}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <label className="space-y-1">
+          <span className="text-xs text-muted">Model family</span>
+          <select
+            className={`${inputCls} cursor-pointer appearance-none`}
+            value={baseModel.startsWith("yolo26") ? "yolov26" : "yolov8"}
+            onChange={(e) =>
+              setBaseModel(e.target.value === "yolov26" ? "yolo26n.pt" : "yolov8n.pt")
+            }
+          >
+            <option value="yolov8">YOLOv8 (yolov8n.pt)</option>
+            <option value="yolov26">YOLOv26 (yolo26n.pt)</option>
+          </select>
+        </label>
+        <label className="space-y-1">
           <span className="text-xs text-muted">Base model</span>
           <input
             className={inputCls}

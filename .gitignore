@@ -226,6 +226,7 @@ runs/
 training_artifacts/
 training_uploads/
 training_workspace/
+yolov26/yolotraining/dataset/
 *.pt
 *.zip
 

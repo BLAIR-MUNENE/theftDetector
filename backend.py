@@ -566,7 +566,14 @@ class CameraManager:
                     continue
 
             if fallback_webcam and not added_any:
-                self.add_camera("0", "Kamera 1")
+                try:
+                    res = self.add_camera("0", "Kamera 1")
+                    if not res.get("id"):
+                        print("No camera sources configured and webcam index 0 is unavailable. "
+                              "Running in camera-less mode — dashboard will remain accessible.")
+                except Exception as e:
+                    print(f"Webcam fallback failed: {e}. "
+                          "Running in camera-less mode — dashboard will remain accessible.")
 
     def remove_camera(self, cam_id):
         with self.lock:
@@ -2192,15 +2199,14 @@ def video_loop():
                 })
             
             frame_count += 1
-            if frames_payload:
-                with lock:
-                    latest_frame = {
-                        "type": "multi_frame",
-                        "cameras": frames_payload,
-                        "alert": alert_payload,
-                        "audio": "siren" if alert_payload else None,
-                        "generatedAt": datetime.now().isoformat(),
-                    }
+            with lock:
+                latest_frame = {
+                    "type": "multi_frame",
+                    "cameras": frames_payload,
+                    "alert": alert_payload,
+                    "audio": "siren" if alert_payload else None,
+                    "generatedAt": datetime.now().isoformat(),
+                }
 
             time.sleep(0.04 if ws_client_count > 0 else 0.12) 
 

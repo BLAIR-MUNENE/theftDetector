@@ -9,6 +9,7 @@ export default function LiveFeeds() {
   const [feeds, setFeeds] = useState<WsMultiFrame["cameras"]>([]);
   const [alert, setAlert] = useState<AlertPayload | null>(null);
   const [connected, setConnected] = useState(false);
+  const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
   const lastAlertId = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -23,6 +24,7 @@ export default function LiveFeeds() {
       try {
         const data = JSON.parse(ev.data as string) as WsMultiFrame;
         if (data.type === "multi_frame" && Array.isArray(data.cameras)) {
+          setHasReceivedFrame(true);
           setFeeds(data.cameras);
           if (data.alert?.id && data.alert.id !== lastAlertId.current) {
             lastAlertId.current = data.alert.id;
@@ -90,8 +92,21 @@ export default function LiveFeeds() {
       {feeds.length === 0 ? (
         <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.02] text-muted">
           <VideoOff className="h-8 w-8 opacity-30" />
-          <p className="text-sm">Waiting for video stream…</p>
-          <p className="text-xs opacity-60">Ensure backend.py is running and a camera is open</p>
+          {hasReceivedFrame && connected ? (
+            <>
+              <p className="text-sm">No cameras detected</p>
+              <p className="text-xs opacity-60">
+                Backend is running but no camera source is available. Connect a camera and restart the backend.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm">Waiting for video stream…</p>
+              <p className="text-xs opacity-60">
+                {connected ? "Backend connected — no frames yet." : "Ensure backend.py is running."}
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div

@@ -1,3 +1,16 @@
+import os
+import logging
+
+# Suppress OpenCV/FFMPEG internal C++ warnings before importing cv2
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("theftguard")
+
 import cv2
 import asyncio
 import base64
@@ -8,7 +21,6 @@ from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 import numpy as np
 import time
-import os
 import shutil
 from datetime import datetime
 import json
@@ -29,7 +41,7 @@ try:
     FACE_REC_AVAILABLE = True
 except ImportError:
     FACE_REC_AVAILABLE = False
-    print("face_recognition not installed. Face ID disabled.")
+    logger.warning("face_recognition not installed. Face recognition disabled.")
 
 def startup_runtime():
     try:
@@ -96,9 +108,9 @@ def init_db():
                      (id TEXT PRIMARY KEY, job_id TEXT, ts TEXT, level TEXT, message TEXT)''')
         conn.commit()
         conn.close()
-        print("Database initialized.")
+        logger.info("Database initialized.")
     except Exception as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database initialization failed: {e}")
 
 init_db()
 
@@ -150,15 +162,15 @@ def load_detection_models(model_name: str):
         model_obj = YOLO(cfg["obj_primary"])
         if cfg.get("specialized", False):
             model_is_specialized = True
-            print(f"Specialized model loaded: {cfg['obj_primary']}")
+            logger.info(f"Specialized model loaded: {cfg['obj_primary']}")
         else:
-            print(f"Detection model loaded: {cfg['obj_primary']}")
+            logger.info(f"Detection model loaded: {cfg['obj_primary']}")
     except Exception:
-        print(f"Primary model '{cfg['obj_primary']}' not found, using fallback '{cfg['obj_fallback']}'")
+        logger.warning(f"Primary model '{cfg['obj_primary']}' not found, using fallback '{cfg['obj_fallback']}'")
         try:
             model_obj = YOLO(cfg["obj_fallback"])
         except Exception as e:
-            print(f"Fallback model also failed: {e}")
+            logger.error(f"Fallback model also failed: {e}")
             model_obj = None
     return model_pose, model_obj, model_is_specialized
 
@@ -169,9 +181,9 @@ if not os.path.exists(SETTINGS_FILE):
     if os.path.exists(SETTINGS_EXAMPLE_FILE):
         import shutil
         shutil.copy(SETTINGS_EXAMPLE_FILE, SETTINGS_FILE)
-        print(f"[SETUP] Created {SETTINGS_FILE} from {SETTINGS_EXAMPLE_FILE}. Configure your cameras in {SETTINGS_FILE}.")
+        logger.info(f"Created {SETTINGS_FILE} from {SETTINGS_EXAMPLE_FILE}. Configure your cameras in {SETTINGS_FILE}.")
     else:
-        print(f"[SETUP] No {SETTINGS_FILE} found. Using defaults.")
+        logger.warning(f"{SETTINGS_FILE} not found. Using defaults.")
 
 try:
     if os.path.exists(SETTINGS_FILE):
@@ -248,9 +260,9 @@ def load_known_faces():
             known_face_names.append(name)
             known_face_types.append(f_type)
         conn.close()
-        print(f"Loaded {len(known_face_names)} faces.")
+        logger.info(f"Loaded {len(known_face_names)} face(s) from database.")
     except Exception as e:
-        print(f"Error loading faces: {e}")
+        logger.error(f"Failed to load faces: {e}")
 
 load_known_faces()
 
@@ -340,7 +352,7 @@ async def save_roi(data: dict):
         current_settings.roiPoints = roi_points
         with open(SETTINGS_FILE, "w") as f:
             json.dump(current_settings.dict(), f, indent=4)
-        print(f"ROI Updated: {roi_points}")
+        logger.info(f"ROI updated: {roi_points}")
         return {"status": "success"}
     return {"status": "error"}
 
@@ -403,9 +415,9 @@ def load_known_faces():
             known_face_names.append(name)
             known_face_types.append(f_type)
         conn.close()
-        print(f"Loaded {len(known_face_names)} faces.")
+        logger.info(f"Loaded {len(known_face_names)} face(s) from database.")
     except Exception as e:
-        print(f"Error loading faces: {e}")
+        logger.error(f"Failed to load faces: {e}")
 
 load_known_faces()
 
@@ -528,14 +540,14 @@ class CameraManager:
                     "retry_after": 0.0,
                     "last_objects": [],
                 }
-                print(f"Kamera eklendi: {name} ({source}) ID: {cam_id}")
+                logger.info(f"Camera added: {name} ({source}) ID: {cam_id}")
                 return {"id": cam_id, "status": "connected", "lastError": None}
 
         try:
             cap.release()
         except Exception:
             pass
-        print(f"Kamera açılamadı: {source}")
+        logger.warning(f"Failed to open camera: {source}")
         return {"id": None, "status": "failed", "lastError": error}
 
     def replace_all(self, sources: list[dict], fallback_webcam: bool = True):
@@ -567,13 +579,13 @@ class CameraManager:
 
             if fallback_webcam and not added_any:
                 try:
-                    res = self.add_camera("0", "Kamera 1")
+                    res = self.add_camera("0", "Camera 1")
                     if not res.get("id"):
-                        print("No camera sources configured and webcam index 0 is unavailable. "
-                              "Running in camera-less mode — dashboard will remain accessible.")
+                        logger.warning("No camera sources configured and webcam index 0 is unavailable. "
+                                       "Running in camera-less mode — dashboard will remain accessible.")
                 except Exception as e:
-                    print(f"Webcam fallback failed: {e}. "
-                          "Running in camera-less mode — dashboard will remain accessible.")
+                    logger.warning(f"Webcam fallback failed: {e}. "
+                                   "Running in camera-less mode — dashboard will remain accessible.")
 
     def remove_camera(self, cam_id):
         with self.lock:
@@ -1923,34 +1935,34 @@ def check_bending(keypoints):
 def video_loop():
     global roi_points, latest_frame, current_settings, alert_payload, known_face_encodings, known_face_names, known_face_types, person_states
 
-    print("Video Loop Başlatılıyor...")
+    logger.info("Starting video loop...")
 
     _loaded_model_name = current_settings.activeDetectionModel
     try:
-        print(f"Loading models for: {_loaded_model_name}")
+        logger.info(f"Loading models for: {_loaded_model_name}")
         model_pose, model_obj, model_is_specialized = load_detection_models(_loaded_model_name)
-        print("Models ready.")
+        logger.info("Models ready.")
     except Exception as e:
-        print(f"CRITICAL MODEL ERROR: {e}")
+        logger.critical(f"Model load failed: {e}")
         with open("error_log.txt", "a") as f:
             f.write(f"{datetime.now()}: CRITICAL LOAD ERROR: {e}\n")
         return
 
     frame_count = 0
     no_signal_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    cv2.putText(no_signal_frame, "SINYAL YOK", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+    cv2.putText(no_signal_frame, "NO SIGNAL", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
 
     while True:
         # Hot-swap models when activeDetectionModel setting changes
         desired_model = current_settings.activeDetectionModel
         if desired_model != _loaded_model_name:
             try:
-                print(f"Switching detection model: {_loaded_model_name} → {desired_model}")
+                logger.info(f"Switching detection model: {_loaded_model_name} → {desired_model}")
                 model_pose, model_obj, model_is_specialized = load_detection_models(desired_model)
                 _loaded_model_name = desired_model
-                print(f"Model switched to: {desired_model}")
+                logger.info(f"Model switched to: {desired_model}")
             except Exception as _e:
-                print(f"Model switch failed, keeping {_loaded_model_name}: {_e}")
+                logger.error(f"Model switch failed, keeping {_loaded_model_name}: {_e}")
 
         try:
             with camera_manager.lock:
@@ -2211,7 +2223,7 @@ def video_loop():
             time.sleep(0.04 if ws_client_count > 0 else 0.12) 
 
         except Exception as e:
-            print(f"Loop Error: {e}")
+            logger.error(f"Video loop error: {e}")
             with open("error_log.txt", "a") as f:
                 f.write(f"{datetime.now()}: Loop Runtime Error: {e}\n")
             time.sleep(1)
@@ -2220,7 +2232,7 @@ def video_loop():
 def trigger_alert(cam_id, cam_name, message, frame):
     global alert_payload
     try:
-        print(f"ALERT: {message}")
+        logger.info(f"Alert triggered: {message}")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"alerts/alert_{cam_id}_{timestamp}.jpg"
         cv2.imwrite(filename, frame)
@@ -2247,7 +2259,7 @@ def trigger_alert(cam_id, cam_name, message, frame):
         threading.Thread(target=send_notifications, args=(message, filename)).start()
         
     except Exception as e:
-        print(f"Alert Error: {e}")
+        logger.error(f"Alert dispatch failed: {e}")
 
 def send_notifications(message, image_path):
     # Quick implementation of notification sending based on current_settings
@@ -2267,7 +2279,7 @@ async def websocket_endpoint(websocket: WebSocket):
     global ws_client_count
     await websocket.accept()
     ws_client_count += 1
-    print("Client connected")
+    logger.info("WebSocket client connected")
     last_sent = None
     try:
         while True:
@@ -2283,9 +2295,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             await asyncio.sleep(0.08) 
     except WebSocketDisconnect:
-        print("Client disconnected")
+        logger.info("WebSocket client disconnected")
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"WebSocket error: {e}")
     finally:
         ws_client_count = max(0, ws_client_count - 1)
 

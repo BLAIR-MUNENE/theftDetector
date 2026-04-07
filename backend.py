@@ -1137,6 +1137,45 @@ def _safe_unlink_training_artifact_path(path: str | None) -> None:
             return
 
 
+def resolve_training_weight_paths(job_id: str, save_dir: str | None) -> tuple[str | None, str | None, list[str]]:
+    """
+    Resolve best/last weight paths across known Ultralytics output layouts.
+    Returns: (best_path, last_path, checked_weights_dirs)
+    """
+    checked_dirs: list[str] = []
+    candidate_weight_dirs: list[str] = []
+
+    if save_dir:
+        candidate_weight_dirs.append(os.path.join(str(save_dir), "weights"))
+    candidate_weight_dirs.append(os.path.join(TRAINING_WORKSPACE_DIR, job_id, "weights"))
+    candidate_weight_dirs.append(os.path.join("runs", "detect", TRAINING_WORKSPACE_DIR, job_id, "weights"))
+
+    # De-duplicate after normalization to avoid repeated filesystem checks.
+    seen: set[str] = set()
+    deduped_dirs: list[str] = []
+    for d in candidate_weight_dirs:
+        nd = os.path.normcase(os.path.abspath(d))
+        if nd in seen:
+            continue
+        seen.add(nd)
+        deduped_dirs.append(d)
+
+    best_path = None
+    last_path = None
+    for weight_dir in deduped_dirs:
+        checked_dirs.append(os.path.abspath(weight_dir))
+        best_candidate = os.path.join(weight_dir, "best.pt")
+        last_candidate = os.path.join(weight_dir, "last.pt")
+        if best_path is None and os.path.isfile(best_candidate):
+            best_path = os.path.abspath(best_candidate)
+        if last_path is None and os.path.isfile(last_candidate):
+            last_path = os.path.abspath(last_candidate)
+        if best_path and last_path:
+            break
+
+    return best_path, last_path, checked_dirs
+
+
 class TrainingWorker:
     def __init__(self):
         self.thread = None
@@ -1286,16 +1325,20 @@ class TrainingWorker:
 
             results = model.train(**train_kwargs)
 
-            best_path = None
-            last_path = None
+            save_dir = None
             try:
-                save_dir = getattr(results, "save_dir", None)
-                if save_dir:
-                    best_path = os.path.join(str(save_dir), "weights", "best.pt")
-                    last_path = os.path.join(str(save_dir), "weights", "last.pt")
+                save_dir = str(getattr(results, "save_dir", "") or "").strip() or None
             except Exception:
-                best_path = None
-                last_path = None
+                save_dir = None
+
+            best_path, last_path, checked_weight_dirs = resolve_training_weight_paths(job_id, save_dir)
+            if save_dir:
+                append_training_log(job_id, "INFO", f"Training save directory reported by Ultralytics: {os.path.abspath(save_dir)}")
+            append_training_log(
+                job_id,
+                "INFO",
+                "Checked weight directories: " + " | ".join(checked_weight_dirs),
+            )
 
             if last_path and os.path.exists(last_path):
                 create_training_artifact(
@@ -1304,6 +1347,7 @@ class TrainingWorker:
                     last_path,
                     {"epochs": epochs, "imgsz": imgsz, "batch": batch},
                 )
+                append_training_log(job_id, "INFO", f"Resume checkpoint recorded: {last_path}")
 
             if self._should_cancel(job_id):
                 update_training_job(
@@ -1319,10 +1363,14 @@ class TrainingWorker:
                 return
 
             if not best_path or not os.path.exists(best_path):
-                raise RuntimeError("Training finished but no best.pt artifact was produced.")
+                raise RuntimeError(
+                    "Training finished but best.pt could not be found in expected output directories. "
+                    "Inspect training logs for checked paths."
+                )
 
-            promoted_path = os.path.join(TRAINING_ARTIFACTS_DIR, f"{job_id}_best.pt")
+            promoted_path = os.path.abspath(os.path.join(TRAINING_ARTIFACTS_DIR, f"{job_id}_best.pt"))
             shutil.copy2(best_path, promoted_path)
+            append_training_log(job_id, "INFO", f"Best weights copied from {best_path} to {promoted_path}")
 
             metrics = {
                 "epochs": epochs,

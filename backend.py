@@ -50,6 +50,15 @@ def startup_runtime():
     except Exception as exc:
         logger.warning(f"Training job reconciliation skipped: {exc}")
     try:
+        init_db()
+    except Exception as exc:
+        logger.warning(f"Database initialization skipped: {exc}")
+    try:
+        # `load_known_faces` is a no-op if face_recognition isn't installed.
+        load_known_faces()
+    except Exception as exc:
+        logger.warning(f"Face registry load skipped: {exc}")
+    try:
         startup_sources = [{"name": c.name, "source": c.source} for c in getattr(current_settings, "cameraSources", [])]
     except Exception:
         startup_sources = []
@@ -116,8 +125,6 @@ def init_db():
         logger.info("Database initialized.")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
-
-init_db()
 
 # --- Settings & Models ---
 SETTINGS_FILE = "settings.json"
@@ -310,7 +317,12 @@ def load_known_faces():
     except Exception as e:
         logger.error(f"Failed to load faces: {e}")
 
-load_known_faces()
+try:
+    # Avoid running DB/face initialization at import-time (Windows training subprocesses can
+    # re-import this module). Initialization happens in `startup_runtime()`.
+    pass
+except Exception:
+    pass
 
 # --- API Endpoints ---
 # ... (Keep existing settings/roi/history endpoints) ...
@@ -465,7 +477,12 @@ def load_known_faces():
     except Exception as e:
         logger.error(f"Failed to load faces: {e}")
 
-load_known_faces()
+try:
+    # Avoid running DB/face initialization at import-time (Windows training subprocesses can
+    # re-import this module). Initialization happens in `startup_runtime()`.
+    pass
+except Exception:
+    pass
 
 @app.post("/faces/register")
 async def register_face(file: UploadFile = File(...), name: str = Form(...), type: str = Form("blacklist")):
@@ -1254,6 +1271,11 @@ class TrainingWorker:
                 "batch": batch,
                 "device": device,
                 "patience": patience,
+                # On Windows, Ultralytics dataloader workers spawn new Python processes which
+                # can re-import `backend.py` when running the server via `python backend.py`.
+                # Using workers=0 avoids repeated top-level initialization logs and prevents
+                # accidental duplicate startup side effects.
+                "workers": 0,
                 "project": TRAINING_WORKSPACE_DIR,
                 "name": job_id,
                 "exist_ok": True,

@@ -8,7 +8,10 @@ import { Loader2, Play, RefreshCw, ShieldCheck, Square, Trash2 } from "lucide-re
 type Props = {
   jobs: TrainingJob[];
   logs: TrainingLog[];
+  /** Artifacts for the latest finished session only (filtered upstream). */
   artifacts: TrainingArtifact[];
+  /** Job id used for that filter; null if no completed/failed/cancelled jobs yet. */
+  latestFinishedJobId: string | null;
   selectedJobId: string | null;
   onSelectJob: (id: string) => void;
   onRefresh: () => Promise<void>;
@@ -19,6 +22,7 @@ export default function TrainJobs({
   jobs,
   logs,
   artifacts,
+  latestFinishedJobId,
   selectedJobId,
   onSelectJob,
   onRefresh,
@@ -271,8 +275,24 @@ export default function TrainJobs({
             {/* Artifacts */}
             <div className="rounded-xl border border-white/[0.06] bg-black/20 p-4">
               <h3 className="text-sm font-medium text-foreground">Artifacts</h3>
+              <p className="mt-1 text-xs text-muted">
+                {latestFinishedJobId ? (
+                  <>
+                    Latest finished session (completed, failed, or cancelled), by end time — job{" "}
+                    <span className="font-mono text-foreground/90">
+                      {latestFinishedJobId.slice(0, 8)}…
+                    </span>
+                  </>
+                ) : (
+                  "No finished job yet — run a job to completion (or failure/cancel) to see artifacts here."
+                )}
+              </p>
               {artifacts.length === 0 ? (
-                <p className="mt-3 text-sm text-muted">No artifacts yet.</p>
+                <p className="mt-3 text-sm text-muted">
+                  {latestFinishedJobId
+                    ? "No saved artifacts for that session yet."
+                    : "No artifacts to show."}
+                </p>
               ) : (
                 <ul className="mt-3 space-y-2">
                   {artifacts.map((artifact) => (

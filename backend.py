@@ -1,5 +1,6 @@
 import os
 import logging
+import warnings
 
 # Suppress OpenCV/FFMPEG internal C++ warnings before importing cv2
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
@@ -10,6 +11,17 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("theftguard")
+
+# face_recognition_models currently imports pkg_resources, which triggers a
+# deprecation warning with newer setuptools versions. We constrain setuptools in
+# tracked dependencies and suppress this single known third-party warning so
+# startup logs remain actionable.
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API\.",
+    category=UserWarning,
+    module=r"face_recognition_models(\..*)?$",
+)
 
 import cv2
 import asyncio

@@ -1,0 +1,3 @@
+# Keep setuptools below 81 until face_recognition_models stops importing
+# pkg_resources (deprecated and scheduled for removal).
+setuptools<81

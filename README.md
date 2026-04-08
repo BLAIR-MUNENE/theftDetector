@@ -124,8 +124,12 @@ source .venv/bin/activate
 ### 3. Install Python dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
+
+> If your project does not yet include a `requirements.txt`, install your packages as usual and still pass
+> `-c constraints.txt` so environment resolution keeps `setuptools` below `81` (avoids known
+> `face_recognition_models`/`pkg_resources` deprecation noise).
 
 ### 4. Configure camera sources
 

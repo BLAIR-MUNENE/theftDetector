@@ -3,8 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE } from "@/lib/config";
 import { fetchTrainingDevices } from "@/lib/api";
+import {
+  inferSuggestedTrainingDefaults,
+  suggestBatchForCpuLargeDataset,
+} from "@/lib/training-dataset-config";
 import type { TrainingDataset, TrainingDeviceCapabilities } from "@/lib/types";
-import { Loader2, Play } from "lucide-react";
+import { Loader2, Play, Sparkles } from "lucide-react";
 
 type Props = {
   datasets: TrainingDataset[];
@@ -44,6 +48,25 @@ export default function TrainForm({
     () => deviceCaps.devices.find((item) => item.id === device)?.available ?? device === "cpu",
     [deviceCaps.devices, device]
   );
+
+  const datasetSuggestion = useMemo(
+    () => inferSuggestedTrainingDefaults(selectedDataset),
+    [selectedDataset]
+  );
+
+  function applyDatasetDefaults() {
+    if (!datasetSuggestion || !selectedDataset) return;
+    setBaseModel(datasetSuggestion.baseModel);
+    setTaskType(datasetSuggestion.taskType);
+    const batchHint = suggestBatchForCpuLargeDataset(
+      selectedDataset.sampleCount,
+      device
+    );
+    if (batchHint !== null) {
+      setBatch(batchHint);
+    }
+    onMessage("Applied suggested settings from the selected dataset.");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -115,12 +138,49 @@ export default function TrainForm({
         )}
       </div>
 
+      {selectedDataset && selectedDatasetReady && datasetSuggestion && (
+        <div className="space-y-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3 py-3 text-xs text-muted">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium text-foreground">Suggested from this dataset</p>
+            <button
+              type="button"
+              onClick={applyDatasetDefaults}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-black/30 px-3 py-1.5 text-xs font-medium text-foreground transition hover:bg-white/[0.08]"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Apply dataset defaults
+            </button>
+          </div>
+          <ul className="list-inside list-disc space-y-0.5">
+            <li>
+              Base model <code className="text-foreground">{datasetSuggestion.baseModel}</code>, task{" "}
+              <code className="text-foreground">{datasetSuggestion.taskType}</code>
+            </li>
+            {datasetSuggestion.rationale.map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+          {datasetSuggestion.warnings.length > 0 && (
+            <div className="rounded-lg border border-amber-900/40 bg-amber-950/25 px-2 py-1.5 text-amber-100">
+              {datasetSuggestion.warnings.map((w, i) => (
+                <p key={i}>{w}</p>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-muted/90">
+            Device, epochs, image size, and patience are unchanged unless a lower batch is suggested for CPU on large
+            datasets. You can still edit any field after applying.
+          </p>
+        </div>
+      )}
+
       {/* Hint box */}
       <div className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-xs text-muted">
         Recommended first run: <code className="text-foreground">yolov8n.pt</code>, Object detection,
         image size <code className="text-foreground">640</code>, batch <code className="text-foreground">8</code>,
         patience <code className="text-foreground">10</code>, and CPU unless CUDA is confirmed working.
-        The validation split field is informational for pre-split YOLO datasets.
+        Use <span className="text-foreground/90">Apply dataset defaults</span> above when the dataset name or registration
+        hints at YOLOv26 or a non-detect task. The validation split field is informational for pre-split YOLO datasets.
       </div>
 
       {/* CUDA warning */}

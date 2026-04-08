@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Epilogue, Public_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import AppShell from "@/components/AppShell";
+import { AuthProvider } from "@/lib/auth";
 
 const bodyFont = Epilogue({
   subsets: ["latin"],
@@ -37,7 +38,9 @@ export default function RootLayout({
       className={`${bodyFont.variable} ${fontHeadline.variable} ${fontLabel.variable} h-full antialiased dark`}
     >
       <body className="min-h-full flex flex-col">
-        <AppShell>{children}</AppShell>
+        <AuthProvider>
+          <AppShell>{children}</AppShell>
+        </AuthProvider>
       </body>
     </html>
   );

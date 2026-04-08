@@ -5,8 +5,9 @@ from ninja import File, Form
 from ninja.files import UploadedFile
 from ninja_extra import api_controller, http_delete, http_get, http_post
 
-from core.legacy import legacy_db_rows
+from core.legacy import legacy_db_rows, use_legacy_reads
 from django.conf import settings
+from faces.models import FaceEntry
 
 
 FACES_DIR = settings.REPO_ROOT / "faces_registry"
@@ -17,8 +18,13 @@ FACES_DIR.mkdir(parents=True, exist_ok=True)
 class FacesController:
     @http_get("")
     def list_faces(self):
-        rows = legacy_db_rows("SELECT id, name, type FROM faces ORDER BY id DESC")
-        return rows
+        if use_legacy_reads():
+            return legacy_db_rows("SELECT id, name, type FROM faces ORDER BY id DESC")
+        try:
+            rows = FaceEntry.objects.all().order_by("-created_at")
+            return [{"id": r.id, "name": r.name, "type": r.type} for r in rows]
+        except Exception:
+            return legacy_db_rows("SELECT id, name, type FROM faces ORDER BY id DESC")
 
     @http_post("/register")
     def register_face(
@@ -33,8 +39,14 @@ class FacesController:
         destination = FACES_DIR / filename
         with destination.open("wb") as f:
             f.write(file.read())
+        face_id = uuid4().hex
+        FaceEntry.objects.update_or_create(
+            id=face_id,
+            defaults={"name": name, "type": type, "image_path": str(destination)},
+        )
         return {"status": "success", "message": "Face image stored.", "name": name, "type": type}
 
     @http_delete("/{face_id}")
     def delete_face(self, face_id: str):
+        FaceEntry.objects.filter(id=face_id).delete()
         return {"status": "success", "message": f"Face {face_id} removed."}

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   MonitorPlay,
@@ -13,26 +13,43 @@ import {
   ScanFace,
   Settings2,
   Shield,
+  UserCircle2,
+  Users,
+  LogOut,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { API_BASE } from "@/lib/config";
 
 const nav = [
   { href: "/", label: "Control room", icon: LayoutDashboard },
   { href: "/live", label: "Live", icon: MonitorPlay },
   { href: "/playback", label: "Playback", icon: PlaySquare },
-  { href: "/train", label: "Train", icon: BrainCircuit },
   { href: "/roi", label: "ROI zones", icon: Crosshair },
   { href: "/cameras", label: "Cameras", icon: Camera },
   { href: "/history", label: "History", icon: History },
   { href: "/faces", label: "Faces", icon: ScanFace },
   { href: "/settings", label: "Settings", icon: Settings2 },
+  { href: "/profile", label: "Profile", icon: UserCircle2 },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user } = useAuth();
   const isAuthPage = pathname === "/login" || pathname === "/signup";
+  const isAdmin = Boolean(user?.isAdmin);
+  const items = [
+    ...nav,
+    ...(isAdmin ? [{ href: "/train", label: "Train", icon: BrainCircuit }, { href: "/admin/users", label: "User Management", icon: Users }] : []),
+  ];
 
   if (isAuthPage) {
     return <>{children}</>;
+  }
+
+  async function logout() {
+    await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+    router.replace("/login");
   }
 
   return (
@@ -63,7 +80,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </p>
         </div>
         <nav className="flex flex-1 flex-col" style={{ paddingBottom: 8 }}>
-          {nav.map(({ href, label, icon: Icon }) => {
+          {items.map(({ href, label, icon: Icon }) => {
             const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
             return (
               <Link
@@ -95,6 +112,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               :8000
             </code>
           </div>
+          <button type="button" onClick={logout} className="mt-3 inline-flex items-center gap-2 rounded-lg border border-white/20 px-2.5 py-1.5 text-xs text-foreground hover:bg-white/10">
+            <LogOut className="h-3.5 w-3.5" />
+            Logout
+          </button>
         </div>
       </aside>
       <main style={{ marginLeft: 260 }} className="relative z-10 min-h-screen">

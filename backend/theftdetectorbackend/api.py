@@ -5,7 +5,7 @@ from cameras.api import CamerasController
 from core.api import HealthController, RoiController, SettingsController, StatsController
 from faces.api import FacesController
 from training.api import PlaybackController, TrainingController
-from users.api import AuthController
+from users.api import AdminUsersController, AuthController, ProfileController
 
 
 api = NinjaExtraAPI(
@@ -16,6 +16,8 @@ api = NinjaExtraAPI(
 
 api.register_controllers(
     AuthController,
+    ProfileController,
+    AdminUsersController,
     HealthController,
     SettingsController,
     RoiController,

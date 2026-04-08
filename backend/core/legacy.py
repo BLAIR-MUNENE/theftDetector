@@ -11,6 +11,7 @@ from django.conf import settings
 SETTINGS_PATH = settings.REPO_ROOT / "settings.json"
 SETTINGS_EXAMPLE_PATH = settings.REPO_ROOT / "settings.example.json"
 LEGACY_DB_PATH = settings.REPO_ROOT / "theft_detection.db"
+USE_LEGACY_READS = settings.__dict__.get("USE_LEGACY_READS", False)
 
 
 def load_json(path: Path, fallback: Any) -> Any:
@@ -51,3 +52,7 @@ def legacy_db_rows(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, A
         return []
     finally:
         conn.close()
+
+
+def use_legacy_reads() -> bool:
+    return bool(USE_LEGACY_READS)

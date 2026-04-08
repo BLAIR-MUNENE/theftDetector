@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 
 from ninja_extra import api_controller, http_get, http_post
 
-from core.legacy import legacy_db_rows, load_runtime_settings, save_runtime_settings
+from alerts.models import Alert
+from core.legacy import legacy_db_rows, load_runtime_settings, save_runtime_settings, use_legacy_reads
 from core.schemas import MessageResponse
 
 
@@ -55,12 +56,19 @@ class RoiController:
 class StatsController:
     @http_get("")
     def get_stats(self):
-        rows = legacy_db_rows("SELECT timestamp FROM alerts ORDER BY timestamp ASC")
+        if use_legacy_reads():
+            rows = legacy_db_rows("SELECT timestamp FROM alerts ORDER BY timestamp ASC")
+            timestamps = [r.get("timestamp") for r in rows]
+        else:
+            try:
+                timestamps = list(Alert.objects.values_list("timestamp", flat=True))
+            except Exception:
+                rows = legacy_db_rows("SELECT timestamp FROM alerts ORDER BY timestamp ASC")
+                timestamps = [r.get("timestamp") for r in rows]
         today = datetime.utcnow().date()
         buckets = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
         counts = {d.isoformat(): 0 for d in buckets}
-        for row in rows:
-            raw_ts = row.get("timestamp")
+        for raw_ts in timestamps:
             if not raw_ts:
                 continue
             day_key = str(raw_ts)[:10]

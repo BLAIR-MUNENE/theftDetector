@@ -1,14 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import TrainDatasets from "@/components/TrainDatasets";
 import TrainForm from "@/components/TrainForm";
 import TrainJobs from "@/components/TrainJobs";
 import { fetchTrainingArtifacts, fetchTrainingDatasets, fetchTrainingJobs, fetchTrainingLogs } from "@/lib/api";
 import { getLatestFinishedJobId } from "@/lib/training-session";
 import type { TrainingArtifact, TrainingDataset, TrainingJob, TrainingLog } from "@/lib/types";
+import { useAuth } from "@/lib/auth";
 
 export default function TrainPage() {
+  const router = useRouter();
+  const { loading: authLoading, user } = useAuth();
+  const isAdmin = Boolean(user?.isAdmin);
   const [datasets, setDatasets] = useState<TrainingDataset[]>([]);
   const [jobs, setJobs] = useState<TrainingJob[]>([]);
   const [artifacts, setArtifacts] = useState<TrainingArtifact[]>([]);
@@ -16,6 +21,14 @@ export default function TrainPage() {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!authLoading && !isAdmin) router.replace("/");
+  }, [authLoading, isAdmin, router]);
+
+  if (authLoading || !isAdmin) {
+    return <div className="text-sm text-muted">Checking access...</div>;
+  }
 
   const hasActiveJob = useMemo(() => jobs.some((job) => ["queued", "running", "stopping"].includes(job.status)), [jobs]);
   const latestFinishedJobId = useMemo(() => getLatestFinishedJobId(jobs), [jobs]);

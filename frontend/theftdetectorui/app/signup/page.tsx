@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { API_BASE } from "@/lib/config";
+import { useAuth } from "@/lib/auth";
 
 export default function SignupPage() {
   const router = useRouter();
+  const { refresh } = useAuth();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
@@ -25,6 +27,7 @@ export default function SignupPage() {
       });
       const data = await res.json();
       if (data.status === "success") {
+        await refresh();
         router.replace("/");
         return;
       }

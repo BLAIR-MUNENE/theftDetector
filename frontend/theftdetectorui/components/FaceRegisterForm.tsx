@@ -28,6 +28,7 @@ export default function FaceRegisterForm() {
       fd.append("type", group);
       const r = await fetch(`${API_BASE}/faces/register`, {
         method: "POST",
+        credentials: "include",
         body: fd,
       });
       const j = await r.json();

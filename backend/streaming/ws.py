@@ -4,6 +4,8 @@ import asyncio
 import json
 from datetime import datetime
 
+from cameras.runtime import camera_runtime
+
 
 async def websocket_heartbeat_app(scope, receive, send):
     """
@@ -14,14 +16,19 @@ async def websocket_heartbeat_app(scope, receive, send):
         return
 
     await send({"type": "websocket.accept"})
+    camera_runtime.ensure_loaded()
     try:
         while True:
-            event = await receive()
-            if event["type"] == "websocket.disconnect":
-                break
+            try:
+                event = await asyncio.wait_for(receive(), timeout=0.01)
+                if event["type"] == "websocket.disconnect":
+                    break
+            except asyncio.TimeoutError:
+                pass
+            frames = camera_runtime.get_ws_frames()
             payload = {
                 "type": "multi_frame",
-                "cameras": [],
+                "cameras": frames,
                 "alert": {
                     "id": f"heartbeat-{int(datetime.utcnow().timestamp())}",
                     "message": "Django recreation backend connected.",

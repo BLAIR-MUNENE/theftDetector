@@ -6,6 +6,7 @@ from ninja.files import UploadedFile
 from ninja_extra import api_controller, http_delete, http_get, http_post
 
 from django.conf import settings
+from django.http import JsonResponse
 from faces.models import FaceEntry
 
 
@@ -15,6 +16,11 @@ FACES_DIR.mkdir(parents=True, exist_ok=True)
 
 @api_controller("/faces", tags=["faces"])
 class FacesController:
+    def _auth_required(self, request):
+        if not request.user.is_authenticated:
+            return JsonResponse({"status": "error", "message": "Authentication required."}, status=401)
+        return None
+
     @http_get("")
     def list_faces(self):
         rows = FaceEntry.objects.all().order_by("-created_at")
@@ -28,6 +34,9 @@ class FacesController:
         name: str = Form(...),
         type: str = Form("blacklist"),
     ):
+        guard = self._auth_required(request)
+        if guard:
+            return guard
         suffix = Path(file.name or "face.jpg").suffix or ".jpg"
         filename = f"{uuid4().hex}{suffix}"
         destination = FACES_DIR / filename
@@ -41,6 +50,9 @@ class FacesController:
         return {"status": "success", "message": "Face image stored.", "name": name, "type": type}
 
     @http_delete("/{face_id}")
-    def delete_face(self, face_id: str):
+    def delete_face(self, request, face_id: str):
+        guard = self._auth_required(request)
+        if guard:
+            return guard
         FaceEntry.objects.filter(id=face_id).delete()
         return {"status": "success", "message": f"Face {face_id} removed."}

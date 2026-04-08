@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, alertImageUrl } from "@/lib/config";
@@ -19,7 +20,7 @@ export default function PlaybackPage() {
   const clearTokenRef = useRef(0);
   const hasActive = useMemo(() => jobs.some((j) => j.status === "queued" || j.status === "running"), [jobs]);
 
-  async function refresh(): Promise<Job[]> { try { const r = await fetch(`${API_BASE}/playback/jobs`, { cache: "no-store" }); const j = await r.json(); const next = Array.isArray(j) ? (j as Job[]) : []; setJobs(next); return next; } catch { return []; } }
+  async function refresh(): Promise<Job[]> { try { const r = await fetch(`${API_BASE}/playback/jobs`, { cache: "no-store", credentials: "include" }); const j = await r.json(); const next = Array.isArray(j) ? (j as Job[]) : []; setJobs(next); return next; } catch { return []; } }
   async function refreshAll() { const nextJobs = await refresh(); const nextActive = nextJobs.some((j) => j.status === "queued" || j.status === "running"); if (!nextActive) { clearTokenRef.current += 1; setPlaybackAlerts([]); setTrackingJobId(null); return; } }
   useEffect(() => { refresh(); const t = window.setInterval(() => { refresh(); }, hasActive ? 1500 : 5000); return () => window.clearInterval(t); }, [hasActive]);
 
@@ -32,7 +33,7 @@ export default function PlaybackPage() {
       fd.append("file", file);
       fd.append("sampleFps", String(sampleFps));
       fd.append("maxSeconds", String(maxSeconds));
-      const r = await fetch(`${API_BASE}/playback/upload`, { method: "POST", body: fd });
+      const r = await fetch(`${API_BASE}/playback/upload`, { method: "POST", body: fd, credentials: "include" });
       const j = await r.json();
       if (!r.ok) setMsg(j?.detail ?? "Upload failed.");
       else { setMsg(`Uploaded. Job: ${j.jobId}`); setTrackingJobId(j.jobId); setPlaybackAlerts([]); setFile(null); refresh(); }

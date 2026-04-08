@@ -13,6 +13,13 @@ type Props = {
   onMessage: (msg: string) => void;
 };
 
+type DatasetResponse = {
+  id?: string;
+  name?: string;
+  message?: string;
+  detail?: string;
+};
+
 export default function TrainDatasets({ datasets, selectedDatasetId, onSelectDataset, onRefresh, onMessage }: Props) {
   const [datasetFile, setDatasetFile] = useState<File | null>(null);
   const [datasetName, setDatasetName] = useState("");
@@ -33,9 +40,9 @@ export default function TrainDatasets({ datasets, selectedDatasetId, onSelectDat
       fd.append("taskType", taskType);
       fd.append("notes", notes);
       const r = await fetch(`${API_BASE}/training/datasets/upload`, { method: "POST", body: fd, credentials: "include" });
-      let j: any = null;
+      let j: DatasetResponse | null = null;
       try {
-        j = await r.json();
+        j = (await r.json()) as DatasetResponse;
       } catch {
         j = null;
       }

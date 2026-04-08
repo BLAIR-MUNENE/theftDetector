@@ -15,7 +15,7 @@ export default function RoiPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   const loadRoi = useCallback(() => {
-    fetch(`${API_BASE}/roi`)
+    fetch(`${API_BASE}/roi`, { credentials: "include" })
       .then((r) => r.json())
       .then((data: { points?: number[][] }) => {
         const p = (data.points ?? []).map((xy) => [xy[0], xy[1]] as [number, number]);
@@ -50,6 +50,7 @@ export default function RoiPage() {
       const r = await fetch(`${API_BASE}/roi`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ points }),
       });
       const j = await r.json();

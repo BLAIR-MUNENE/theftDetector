@@ -6,6 +6,10 @@ import { Loader2, Plus, Save, Trash2, Camera, Wifi, WifiOff } from "lucide-react
 
 type Cam = { id: string; name: string; source: string; status: string };
 type StartupCam = { name: string; source: string };
+type EntryMode = "manual" | "builder";
+type RtspVendor = "generic" | "dahua" | "hikvision";
+type RtspStreamType = "main" | "sub";
+type RtspTransport = "" | "tcp" | "udp";
 
 export default function CamerasPage() {
   const [cams, setCams] = useState<Cam[]>([]);
@@ -18,11 +22,25 @@ export default function CamerasPage() {
   const [startup, setStartup] = useState<StartupCam[]>([]);
   const [startupSelected, setStartupSelected] = useState<Record<string, boolean>>({});
   const [reloadNow, setReloadNow] = useState(true);
+  const [entryMode, setEntryMode] = useState<EntryMode>("manual");
+  const [vendor, setVendor] = useState<RtspVendor>("dahua");
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("554");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [channel, setChannel] = useState("1");
+  const [streamType, setStreamType] = useState<RtspStreamType>("main");
+  const [pathOverride, setPathOverride] = useState("");
+  const [transport, setTransport] = useState<RtspTransport>("");
+  const [builderSource, setBuilderSource] = useState("");
 
   const refresh = useCallback(() => {
     setLoading(true);
     setMsg(null);
-    Promise.all([fetch(`${API_BASE}/cameras`).then((r) => r.json()), fetch(`${API_BASE}/settings`).then((r) => r.json())])
+    Promise.all([
+      fetch(`${API_BASE}/cameras`, { credentials: "include" }).then((r) => r.json()),
+      fetch(`${API_BASE}/settings`, { credentials: "include" }).then((r) => r.json()),
+    ])
       .then(([camsData, settings]) => {
         const nextCams: Cam[] = Array.isArray(camsData) ? camsData : [];
         setCams(nextCams);
@@ -44,13 +62,24 @@ export default function CamerasPage() {
     setAdding(true);
     setMsg(null);
     try {
-      const r = await fetch(`${API_BASE}/cameras`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, source }) });
+      const sourceValue = entryMode === "builder" ? builderSource.trim() : source.trim();
+      if (!sourceValue) {
+        setMsg("Source is required.");
+        return;
+      }
+      const r = await fetch(`${API_BASE}/cameras`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, source: sourceValue }),
+      });
       if (!r.ok) {
         const t = await r.text();
         setMsg(t || "Failed to add camera");
       } else {
         setName("Camera");
         setSource("0");
+        setBuilderSource("");
         refresh();
       }
     } catch {
@@ -60,9 +89,72 @@ export default function CamerasPage() {
     }
   }
 
+  async function buildRtspSource() {
+    setAdding(true);
+    setMsg(null);
+    try {
+      const r = await fetch(`${API_BASE}/cameras/rtsp/build`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          vendor,
+          host: host.trim(),
+          port: Number(port || 554),
+          username,
+          password,
+          channel: Number(channel || 1),
+          streamType,
+          pathOverride,
+          transport,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        setMsg(j?.message ?? "URL build error.");
+        return;
+      }
+      setBuilderSource(j.source ?? "");
+      setSource(j.source ?? "");
+      setMsg("RTSP URL built successfully.");
+    } catch {
+      setMsg("Network error while building RTSP URL.");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function testConnection() {
+    setAdding(true);
+    setMsg(null);
+    try {
+      const sourceValue = entryMode === "builder" ? builderSource.trim() : source.trim();
+      if (!sourceValue) {
+        setMsg("Build or enter a source first.");
+        return;
+      }
+      const r = await fetch(`${API_BASE}/cameras/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, source: sourceValue }),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        setMsg(j?.message ?? "Camera source could not be opened.");
+        return;
+      }
+      setMsg(j?.message ?? "Camera source is reachable.");
+    } catch {
+      setMsg("Network error while testing camera source.");
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function remove(id: string) {
     try {
-      await fetch(`${API_BASE}/cameras/${id}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/cameras/${id}`, { method: "DELETE", credentials: "include" });
       refresh();
     } catch {
       setMsg("Delete failed");
@@ -77,6 +169,7 @@ export default function CamerasPage() {
       const r = await fetch(`${API_BASE}/cameras/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ cameraSources: selected, reloadNow }),
       });
       const j = await r.json();
@@ -103,7 +196,7 @@ export default function CamerasPage() {
         <>
           <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl">
             <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(255,107,0,0.15)] ring-1 ring-[rgba(255,107,0,0.3)]"><Save className="h-4 w-4 text-[rgb(var(--accent-orange))]" /></div><div><h2 className="text-sm font-semibold text-foreground">Startup cameras</h2><p className="text-xs text-muted">Saved as <code className="rounded bg-white/[0.07] px-1 py-0.5 text-foreground">cameraSources</code> in settings.json</p></div></div>
-            {startup.length === 0 ? <p className="rounded-xl border border-dashed border-white/[0.08] bg-black/10 px-4 py-3 text-sm text-muted">No startup cameras saved yet. Select cameras below and click "Save as startup cameras".</p> : <ul className="space-y-2">{startup.map((c, i) => <li key={`${c.source}-${i}`} className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-black/20 px-4 py-3"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.05]"><Camera className="h-3.5 w-3.5 text-muted" /></div><div className="min-w-0"><p className="text-sm font-medium text-foreground">{c.name}</p><p className="mt-0.5 truncate font-mono text-xs text-muted">{c.source}</p></div></li>)}</ul>}
+            {startup.length === 0 ? <p className="rounded-xl border border-dashed border-white/[0.08] bg-black/10 px-4 py-3 text-sm text-muted">No startup cameras saved yet. Select cameras below and click &quot;Save as startup cameras&quot;.</p> : <ul className="space-y-2">{startup.map((c, i) => <li key={`${c.source}-${i}`} className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-black/20 px-4 py-3"><div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.05]"><Camera className="h-3.5 w-3.5 text-muted" /></div><div className="min-w-0"><p className="text-sm font-medium text-foreground">{c.name}</p><p className="mt-0.5 truncate font-mono text-xs text-muted">{c.source}</p></div></li>)}</ul>}
             <label className="flex cursor-pointer items-center gap-3 text-sm text-foreground"><input type="checkbox" checked={reloadNow} onChange={(e) => setReloadNow(e.target.checked)} className="h-4 w-4 rounded border-white/20 accent-[rgb(var(--accent-orange))]" />Reload cameras immediately after saving</label>
             <button type="button" onClick={saveStartupFromSelection} disabled={savingStartup || cams.length === 0} className="inline-flex items-center gap-2 rounded-xl bg-[rgb(var(--accent-orange))] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_0_20px_rgba(255,107,0,0.35)] transition hover:brightness-110 hover:shadow-[0_0_28px_rgba(255,107,0,0.5)] disabled:opacity-50 disabled:shadow-none">{savingStartup ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save as startup cameras</button>
           </section>
@@ -112,9 +205,45 @@ export default function CamerasPage() {
       )}
       <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl">
         <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(255,107,0,0.15)] ring-1 ring-[rgba(255,107,0,0.3)]"><Plus className="h-4 w-4 text-[rgb(var(--accent-orange))]" /></div><h2 className="text-sm font-semibold text-foreground">Add camera</h2></div>
+        <div className="inline-flex rounded-xl border border-white/[0.12] bg-black/20 p-1">
+          <button type="button" onClick={() => setEntryMode("manual")} className={`rounded-lg px-3 py-1.5 text-xs transition ${entryMode === "manual" ? "bg-white/[0.12] text-foreground" : "text-muted hover:text-foreground"}`}>Manual URL</button>
+          <button type="button" onClick={() => setEntryMode("builder")} className={`rounded-lg px-3 py-1.5 text-xs transition ${entryMode === "builder" ? "bg-white/[0.12] text-foreground" : "text-muted hover:text-foreground"}`}>RTSP Builder</button>
+        </div>
         <input className={inputCls} placeholder="Display name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className={`${inputCls} font-mono`} placeholder="Source — USB index (0, 1) or rtsp://..." value={source} onChange={(e) => setSource(e.target.value)} />
-        <button type="button" onClick={addCamera} disabled={adding} className="inline-flex items-center gap-2 rounded-xl border border-white/[0.15] px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Add camera</button>
+        {entryMode === "manual" ? (
+          <input className={`${inputCls} font-mono`} placeholder="Source — USB index (0, 1) or rtsp://..." value={source} onChange={(e) => setSource(e.target.value)} />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <select className={`${inputCls} cursor-pointer`} value={vendor} onChange={(e) => setVendor(e.target.value as RtspVendor)}>
+              <option value="dahua">Dahua</option>
+              <option value="hikvision">Hikvision</option>
+              <option value="generic">Generic</option>
+            </select>
+            <select className={`${inputCls} cursor-pointer`} value={streamType} onChange={(e) => setStreamType(e.target.value as RtspStreamType)}>
+              <option value="main">Main stream</option>
+              <option value="sub">Sub stream</option>
+            </select>
+            <input className={inputCls} placeholder="Host/IP (e.g. 192.168.1.64)" value={host} onChange={(e) => setHost(e.target.value)} />
+            <input className={inputCls} placeholder="Port (default 554)" value={port} onChange={(e) => setPort(e.target.value)} />
+            <input className={inputCls} placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
+            <input type="password" className={inputCls} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <input className={inputCls} placeholder="Channel (1..N)" value={channel} onChange={(e) => setChannel(e.target.value)} />
+            <select className={`${inputCls} cursor-pointer`} value={transport} onChange={(e) => setTransport(e.target.value as RtspTransport)}>
+              <option value="">Transport: default</option>
+              <option value="tcp">Transport: TCP</option>
+              <option value="udp">Transport: UDP</option>
+            </select>
+            <input className={`${inputCls} font-mono sm:col-span-2`} placeholder="Optional custom path override, e.g. /cam/realmonitor?channel=1&subtype=0" value={pathOverride} onChange={(e) => setPathOverride(e.target.value)} />
+            <input readOnly className={`${inputCls} font-mono sm:col-span-2`} placeholder="Built RTSP URL appears here" value={builderSource} />
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {entryMode === "builder" && (
+            <button type="button" onClick={buildRtspSource} disabled={adding} className="inline-flex items-center gap-2 rounded-xl border border-white/[0.15] px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Build URL</button>
+          )}
+          <button type="button" onClick={testConnection} disabled={adding} className="inline-flex items-center gap-2 rounded-xl border border-white/[0.15] px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wifi className="h-4 w-4" />}Test connection</button>
+          <button type="button" onClick={addCamera} disabled={adding} className="inline-flex items-center gap-2 rounded-xl bg-[rgb(var(--accent-orange))] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_0_20px_rgba(255,107,0,0.35)] transition hover:brightness-110 hover:shadow-[0_0_28px_rgba(255,107,0,0.5)] disabled:opacity-50 disabled:shadow-none">{adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Save camera</button>
+        </div>
       </section>
     </div>
   );

@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from django.http import JsonResponse
+from ninja import Body
 from ninja_extra import api_controller, http_get, http_post
 
 from alerts.models import Alert
 from core.legacy import load_runtime_settings, save_runtime_settings
 from core.schemas import MessageResponse
+
+
+def _auth_required(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"status": "error", "message": "Authentication required."}, status=401)
+    return None
 
 
 @api_controller("/health", tags=["core"])
@@ -23,12 +31,18 @@ class SettingsController:
         return load_runtime_settings()
 
     @http_post("", response=MessageResponse)
-    def save_settings(self, payload: dict):
+    def save_settings(self, request, payload: dict = Body(...)):
+        guard = _auth_required(request)
+        if guard:
+            return guard
         save_runtime_settings(payload)
         return MessageResponse(message="Settings saved.")
 
     @http_post("/test", response=MessageResponse)
-    def test_settings(self, payload: dict):
+    def test_settings(self, request, payload: dict = Body(...)):
+        guard = _auth_required(request)
+        if guard:
+            return guard
         email_ok = bool(payload.get("emailEnabled"))
         telegram_ok = bool(payload.get("telegramEnabled"))
         if not email_ok and not telegram_ok:
@@ -45,7 +59,10 @@ class RoiController:
         return {"points": points, "roiPoints": points}
 
     @http_post("", response=MessageResponse)
-    def set_roi(self, payload: dict):
+    def set_roi(self, request, payload: dict = Body(...)):
+        guard = _auth_required(request)
+        if guard:
+            return guard
         settings_data = load_runtime_settings()
         settings_data["roiPoints"] = payload.get("roiPoints", payload.get("points", []))
         save_runtime_settings(settings_data)

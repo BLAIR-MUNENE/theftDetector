@@ -5,34 +5,35 @@ import { API_BASE } from "@/lib/config";
 import type { Settings } from "@/lib/types";
 import { Loader2, Save, Send, Mail, MessageSquare, Eye, Cpu } from "lucide-react";
 
+const EMPTY_SETTINGS: Settings = {
+  emailEnabled: false,
+  smtpServer: "smtp.gmail.com",
+  smtpPort: "587",
+  senderEmail: "",
+  senderPassword: "",
+  receiverEmail: "",
+  telegramEnabled: false,
+  telegramBotToken: "",
+  telegramChatId: "",
+  roiPoints: [],
+  showHeatmap: true,
+  cameraSources: [],
+  activeDetectionModel: "yolov8",
+  activeObjectWeightsYolov8: "",
+  activeObjectWeightsYolov26: "",
+};
+
 export default function SettingsPage() {
-  const empty: Settings = {
-    emailEnabled: false,
-    smtpServer: "smtp.gmail.com",
-    smtpPort: "587",
-    senderEmail: "",
-    senderPassword: "",
-    receiverEmail: "",
-    telegramEnabled: false,
-    telegramBotToken: "",
-    telegramChatId: "",
-    roiPoints: [],
-    showHeatmap: true,
-    cameraSources: [],
-    activeDetectionModel: "yolov8",
-    activeObjectWeightsYolov8: "",
-    activeObjectWeightsYolov26: "",
-  };
-  const [s, setS] = useState<Settings>(empty);
+  const [s, setS] = useState<Settings>(EMPTY_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/settings`)
+    fetch(`${API_BASE}/settings`, { credentials: "include" })
       .then((r) => r.json())
-      .then((data: Settings) => setS({ ...empty, ...data }))
+      .then((data: Settings) => setS({ ...EMPTY_SETTINGS, ...data }))
       .catch(() => setMsg("Could not load settings (is the API up?)"))
       .finally(() => setLoading(false));
   }, []);
@@ -44,6 +45,7 @@ export default function SettingsPage() {
       const r = await fetch(`${API_BASE}/settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(s),
       });
       const j = await r.json();
@@ -62,6 +64,7 @@ export default function SettingsPage() {
       const r = await fetch(`${API_BASE}/settings/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(s),
       });
       const j = await r.json();

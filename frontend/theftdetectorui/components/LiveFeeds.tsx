@@ -81,6 +81,7 @@ export default function LiveFeeds() {
                   <span className="text-sm font-medium text-foreground">{cam.name}</span>
                 </div>
               </div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={`data:image/jpeg;base64,${cam.data}`} alt={cam.name} className="aspect-video w-full object-contain" />
             </div>
           ))}

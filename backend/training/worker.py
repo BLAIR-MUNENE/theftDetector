@@ -141,7 +141,11 @@ class TrainingWorker:
             batch = int(params.get("batch", 8))
             patience = int(params.get("patience", 10))
             device = row.device or "cpu"
-            resume_checkpoint = str(params.get("resumeCheckpointPath", "")).strip() or None
+            resume_raw = params.get("resumeCheckpointPath")
+            if isinstance(resume_raw, str):
+                resume_checkpoint = resume_raw.strip() or None
+            else:
+                resume_checkpoint = None
 
             model_source = resume_checkpoint if resume_checkpoint else (row.base_model or "yolov8n.pt")
             append_training_log(job_id, "INFO", f"Loading model {model_source}.")

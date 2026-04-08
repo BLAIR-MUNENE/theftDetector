@@ -12,6 +12,7 @@ from django.http import JsonResponse
 from training.models import TrainingArtifact, TrainingDataset, TrainingJob, TrainingLog
 from training.dataset_utils import inspect_yolo_dataset, normalize_uploaded_yolo_dataset
 from training.worker import append_training_log, promote_artifact_to_active_model, training_worker
+from training.playback_worker import PlaybackUploadConfig, create_playback_job, playback_jobs, playback_jobs_lock
 
 try:
     import torch  # type: ignore
@@ -25,6 +26,19 @@ class RegisterDatasetPathInput(Schema):
     path: str | None = None
     taskType: str | None = None
     notes: str | None = None
+
+
+class CreateTrainingJobInput(Schema):
+    datasetId: str
+    baseModel: str
+    taskType: str = "detect"
+    epochs: int = 30
+    imgsz: int = 640
+    batch: int = 8
+    device: str = "cpu"
+    validationSplit: float = 0.2
+    patience: int = 10
+    resumeCheckpointPath: str | None = None
 
 
 def _admin_only(request):
@@ -143,20 +157,40 @@ def _ensure_local_path_for_uploaded_dataset(row: TrainingDataset) -> str | None:
 class PlaybackController:
     @http_get("/jobs")
     def list_playback_jobs(self):
-        return []
+        with playback_jobs_lock:
+            jobs = list(playback_jobs.values())
+        jobs.sort(key=lambda j: j.get("createdAt", ""), reverse=True)
+        return jobs
 
     @http_get("/jobs/{job_id}")
     def get_playback_job(self, job_id: str):
-        return {"id": job_id, "status": "unknown"}
+        with playback_jobs_lock:
+            j = playback_jobs.get(job_id)
+        if not j:
+            return JsonResponse({"status": "error", "message": "Job not found"}, status=404)
+        return j
 
     @http_post("/upload")
-    def upload_playback(self, request, payload: dict | None = None):
+    def upload_playback(
+        self,
+        request,
+        file: UploadedFile = File(...),
+        sampleFps: float = Form(2.0),
+        maxSeconds: float = Form(0.0),
+    ):
         guard = _admin_only(request)
         if guard:
             return guard
-        import uuid
-        job_id = f"playback_{uuid.uuid4().hex[:10]}"
-        return {"status": "success", "message": "Playback upload accepted.", "jobId": job_id, "payload": payload or {}}
+        uploads_dir = Path(settings.BASE_DIR) / "media" / "playbacks"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file.name or f"{uuid4().hex}.mp4").name
+        temp_id = uuid4().hex
+        out_path = uploads_dir / f"{temp_id}_{safe_name}"
+        with out_path.open("wb") as f:
+            f.write(file.read())
+        cfg = PlaybackUploadConfig(sample_fps=float(sampleFps or 2.0), max_seconds=float(maxSeconds or 0.0))
+        job = create_playback_job(str(out_path), safe_name, cfg)
+        return {"status": "success", "message": "Playback upload accepted.", "jobId": job["id"], "filename": safe_name}
 
 
 @api_controller("/training", tags=["training"])
@@ -324,11 +358,11 @@ class TrainingController:
         return _job_to_dict(row) if row else {"id": job_id, "status": "unknown"}
 
     @http_post("/jobs")
-    def create_job(self, request, payload: dict):
+    def create_job(self, request, payload: CreateTrainingJobInput):
         guard = _admin_only(request)
         if guard:
             return guard
-        dataset_id = str(payload.get("datasetId", ""))
+        dataset_id = payload.datasetId
         dataset = TrainingDataset.objects.filter(id=dataset_id).first()
         if not dataset:
             return JsonResponse({"status": "error", "message": "Dataset not found."}, status=404)
@@ -339,22 +373,24 @@ class TrainingController:
         if dataset.status not in ("ready", "validated"):
             return JsonResponse({"status": "error", "message": f"Dataset is not ready for training: {dataset.status}"}, status=400)
         try:
-            resolved_device = require_usable_training_device(str(payload.get("device", "cpu")))
+            resolved_device = require_usable_training_device(payload.device)
         except ValueError as exc:
             return JsonResponse({"status": "error", "message": str(exc)}, status=400)
         job_id = uuid4().hex
+        payload_dict = payload.model_dump()
+        payload_dict["device"] = resolved_device
         TrainingJob.objects.create(
             id=job_id,
             dataset_id=dataset.id,
             dataset_name=dataset.name,
-            base_model=str(payload.get("baseModel", "")),
-            task_type=str(payload.get("taskType", "detect")),
+            base_model=payload.baseModel,
+            task_type=payload.taskType or "detect",
             status="queued",
             progress=0.0,
             phase="Queued",
             device=resolved_device,
             created_at=datetime.now().isoformat(),
-            params=payload,
+            params=payload_dict,
             cancel_requested=False,
         )
         append_training_log(job_id, "INFO", "Job queued from dashboard.")

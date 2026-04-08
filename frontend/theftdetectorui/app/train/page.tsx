@@ -25,6 +25,7 @@ export default function TrainPage() {
   const hasActiveJob = useMemo(() => jobs.some((job) => ["queued", "running", "stopping"].includes(job.status)), [jobs]);
   const latestFinishedJobId = useMemo(() => getLatestFinishedJobId(jobs), [jobs]);
   const artifactsForLatestSession = useMemo(() => !latestFinishedJobId ? [] : artifacts.filter((a) => a.jobId === latestFinishedJobId), [artifacts, latestFinishedJobId]);
+  const visibleLogs = useMemo(() => (selectedJobId ? logs : []), [logs, selectedJobId]);
 
   const refresh = useCallback(async () => {
     const [nextDatasets, nextJobs, nextArtifacts] = await Promise.all([fetchTrainingDatasets(), fetchTrainingJobs(), fetchTrainingArtifacts()]);
@@ -41,7 +42,10 @@ export default function TrainPage() {
 
   useEffect(() => {
     if (!isAdmin) return;
-    refresh();
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [isAdmin, refresh]);
 
   useEffect(() => {
@@ -52,7 +56,7 @@ export default function TrainPage() {
 
   useEffect(() => {
     if (!isAdmin) return;
-    if (!selectedJobId) { setLogs([]); return; }
+    if (!selectedJobId) return;
     let cancelled = false;
     async function loadLogs() {
       const nextLogs = await fetchTrainingLogs(selectedJobId);
@@ -76,7 +80,7 @@ export default function TrainPage() {
       {msg && <p className="max-w-4xl rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-foreground">{msg}</p>}
       <TrainDatasets datasets={datasets} selectedDatasetId={selectedDatasetId} onSelectDataset={setSelectedDatasetId} onRefresh={refresh} onMessage={setMsg} />
       <TrainForm datasets={datasets} selectedDatasetId={selectedDatasetId} onRefresh={refresh} onMessage={setMsg} />
-      <TrainJobs jobs={jobs} logs={logs} artifacts={artifactsForLatestSession} latestFinishedJobId={latestFinishedJobId} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} onRefresh={refresh} onMessage={setMsg} />
+      <TrainJobs jobs={jobs} logs={visibleLogs} artifacts={artifactsForLatestSession} latestFinishedJobId={latestFinishedJobId} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} onRefresh={refresh} onMessage={setMsg} />
     </div>
   );
 }

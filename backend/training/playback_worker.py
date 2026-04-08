@@ -30,14 +30,17 @@ playback_jobs_lock = threading.Lock()
 playback_jobs: dict[str, dict] = {}
 
 
-def _select_playback_model() -> str:
+def resolve_playback_model_snapshot() -> dict[str, str]:
+    """Snapshot settings at job start: family label + weights path passed to YOLO()."""
     runtime = load_runtime_settings()
     family = str(runtime.get("activeDetectionModel", "yolov8")).strip().lower()
     if family == "yolov26":
         promoted = runtime.get("activeObjectWeightsYolov26")
-        return str(promoted).strip() if promoted else "yolo26n.pt"
+        path = str(promoted).strip() if promoted else "yolo26n.pt"
+        return {"modelFamily": "yolov26", "weightsPath": path}
     promoted = runtime.get("activeObjectWeightsYolov8")
-    return str(promoted).strip() if promoted else "yolov8n.pt"
+    path = str(promoted).strip() if promoted else "yolov8n.pt"
+    return {"modelFamily": "yolov8", "weightsPath": path}
 
 
 def _create_alert_image_and_row(job_id: str, frame) -> None:
@@ -56,6 +59,7 @@ def _create_alert_image_and_row(job_id: str, frame) -> None:
 
 
 def run_playback_job(job_id: str, video_path: str, cfg: PlaybackUploadConfig) -> None:
+    snapshot = resolve_playback_model_snapshot()
     now = datetime.now().isoformat()
     with playback_jobs_lock:
         job = playback_jobs.get(job_id)
@@ -64,6 +68,8 @@ def run_playback_job(job_id: str, video_path: str, cfg: PlaybackUploadConfig) ->
         job["status"] = "running"
         job["startedAt"] = now
         job["message"] = "Starting analysis..."
+        job["modelFamily"] = snapshot["modelFamily"]
+        job["weightsPath"] = snapshot["weightsPath"]
 
     try:
         if YOLO is None:
@@ -80,7 +86,7 @@ def run_playback_job(job_id: str, video_path: str, cfg: PlaybackUploadConfig) ->
         sample_every = max(1, int(round(fps / max(cfg.sample_fps, 0.1))))
         max_frames = int(cfg.max_seconds * fps) if cfg.max_seconds and cfg.max_seconds > 0 else None
 
-        model = YOLO(_select_playback_model())
+        model = YOLO(snapshot["weightsPath"])
         frame_idx = 0
         processed = 0
         alerts_created = 0
@@ -147,6 +153,8 @@ def create_playback_job(video_path: str, filename: str, cfg: PlaybackUploadConfi
         "alertsCreated": 0,
         "filename": filename,
         "path": video_path,
+        "modelFamily": None,
+        "weightsPath": None,
     }
     with playback_jobs_lock:
         playback_jobs[job_id] = job

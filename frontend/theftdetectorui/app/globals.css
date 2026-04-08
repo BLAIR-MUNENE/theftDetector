@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  --background: 10 12 16;
+  --foreground: 220 222 232;
+  --muted: 110 120 145;
+}
+
+@theme inline {
+  --color-background: rgb(var(--background));
+  --color-foreground: rgb(var(--foreground));
+  --font-sans: var(--font-body);
+}
+
+body {
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+  font-family: var(--font-body), sans-serif;
+}
+
+.text-muted {
+  color: rgb(var(--muted));
+}

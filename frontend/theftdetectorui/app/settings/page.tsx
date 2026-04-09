@@ -89,9 +89,9 @@ export default function SettingsPage() {
     "w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 focus:border-[rgb(var(--accent-orange))]/50 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--accent-orange))]/[0.08] transition";
 
   return (
-    <div className="mx-auto max-w-xl space-y-8">
+    <div className="mx-auto max-w-3xl space-y-6 sm:space-y-8">
       <header>
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">Settings</h1>
+        <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Settings</h1>
         <p className="mt-1 text-sm text-muted">Email, Telegram, and display options. ROI is edited on the ROI page.</p>
       </header>
       {msg && <div className="flex items-center gap-2 rounded-xl border border-[rgb(var(--accent-orange))]/30 bg-[rgb(var(--accent-orange))]/[0.08] px-4 py-3 text-sm text-foreground"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[rgb(var(--accent-orange))]" />{msg}</div>}
@@ -101,7 +101,7 @@ export default function SettingsPage() {
       </section>
       <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl">
         <div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(255,107,0,0.15)] ring-1 ring-[rgba(255,107,0,0.3)]"><Cpu className="h-4 w-4 text-[rgb(var(--accent-orange))]" /></div><h2 className="text-sm font-semibold text-foreground">Detection model</h2></div>
-        <div className="grid grid-cols-2 gap-3">{(["yolov8", "yolov26"] as const).map((m) => <button key={m} type="button" onClick={() => setS({ ...s, activeDetectionModel: m })} className={`rounded-xl border px-4 py-3 text-sm font-medium transition ${s.activeDetectionModel === m ? "border-[rgb(var(--accent-orange))]/60 bg-[rgb(var(--accent-orange))]/10 text-foreground shadow-[0_0_12px_rgba(255,107,0,0.2)]" : "border-white/[0.08] bg-black/20 text-muted hover:border-white/20 hover:text-foreground"}`}>{m === "yolov8" ? "YOLOv8" : "YOLOv26"}<span className="ml-2 text-xs opacity-60">{m === "yolov8" ? "yolov8n.pt" : "yolo26n.pt"}</span></button>)}</div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{(["yolov8", "yolov26"] as const).map((m) => <button key={m} type="button" onClick={() => setS({ ...s, activeDetectionModel: m })} className={`rounded-xl border px-4 py-3 text-sm font-medium transition ${s.activeDetectionModel === m ? "border-[rgb(var(--accent-orange))]/60 bg-[rgb(var(--accent-orange))]/10 text-foreground shadow-[0_0_12px_rgba(255,107,0,0.2)]" : "border-white/[0.08] bg-black/20 text-muted hover:border-white/20 hover:text-foreground"}`}>{m === "yolov8" ? "YOLOv8" : "YOLOv26"}<span className="ml-2 text-xs opacity-60">{m === "yolov8" ? "yolov8n.pt" : "yolo26n.pt"}</span></button>)}</div>
         <label className="block space-y-1"><span className="text-xs text-muted">YOLOv8 — custom object .pt path</span><input className={inputCls} placeholder="Leave empty for default" value={s.activeObjectWeightsYolov8 ?? ""} onChange={(e) => setS({ ...s, activeObjectWeightsYolov8: e.target.value })} /></label>
         <label className="block space-y-1"><span className="text-xs text-muted">YOLOv26 — custom object .pt path</span><input className={inputCls} placeholder="Leave empty for default" value={s.activeObjectWeightsYolov26 ?? ""} onChange={(e) => setS({ ...s, activeObjectWeightsYolov26: e.target.value })} /></label>
       </section>

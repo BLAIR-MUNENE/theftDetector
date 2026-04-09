@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-import cv2  # type: ignore
 from django.conf import settings
 
 from alerts.models import Alert
@@ -18,6 +17,18 @@ except Exception:  # pragma: no cover
     _YOLO = None
 
 YOLO = _YOLO
+
+
+def _load_cv2():
+    try:
+        import cv2  # type: ignore
+
+        return cv2
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(
+            "OpenCV is not installed in this backend environment. "
+            "Install opencv-python to enable playback processing."
+        ) from exc
 
 
 @dataclass
@@ -44,6 +55,7 @@ def resolve_playback_model_snapshot() -> dict[str, str]:
 
 
 def _create_alert_image_and_row(job_id: str, frame) -> None:
+    cv2 = _load_cv2()
     alerts_dir = settings.REPO_ROOT / "alerts"
     alerts_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -59,6 +71,7 @@ def _create_alert_image_and_row(job_id: str, frame) -> None:
 
 
 def run_playback_job(job_id: str, video_path: str, cfg: PlaybackUploadConfig) -> None:
+    cv2 = _load_cv2()
     snapshot = resolve_playback_model_snapshot()
     now = datetime.now().isoformat()
     with playback_jobs_lock:

@@ -31,9 +31,9 @@ export default function TrainJobs({ jobs, logs, artifacts, latestFinishedJobId, 
 
   return (
     <section className="space-y-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Training jobs</h2><p className="mt-1 text-sm text-muted">Monitor queue state, progress, and logs for local training runs.</p></div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={async () => { setBusy("refresh"); await onRefresh(); setBusy(null); }} className="inline-flex items-center gap-2 rounded-xl border border-white/[0.15] px-3 py-2 text-sm text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{busy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Refresh</button>
           <button type="button" onClick={cancelSelected} disabled={busy !== null || !selectedJob || (selectedJob.status !== "queued" && selectedJob.status !== "running")} className="inline-flex items-center gap-2 rounded-xl border border-red-900/50 px-3 py-2 text-sm text-red-300 transition hover:bg-red-950/30 disabled:opacity-50">{busy === "cancel" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}Cancel selected</button>
           <button type="button" onClick={resumeSelected} disabled={busy !== null || !selectedJob || !["cancelled", "failed", "orphaned"].includes(selectedJob.status)} className="inline-flex items-center gap-2 rounded-xl border border-white/[0.15] px-3 py-2 text-sm text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{busy === "resume" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}Resume selected</button>

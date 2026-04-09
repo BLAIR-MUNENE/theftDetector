@@ -75,7 +75,7 @@ export default function TrainPage() {
   return (
     <div className="space-y-8">
       <header className="max-w-4xl">
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">Train</h1>
+        <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Train</h1>
         <p className="mt-1 text-sm text-muted">Ingest datasets, start local background training jobs, inspect logs, and promote saved artifacts when ready.</p>
       </header>
       {msg && <p className="max-w-4xl rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-foreground">{msg}</p>}

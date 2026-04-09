@@ -53,7 +53,7 @@ export default function LiveFeeds() {
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 sm:px-4">
         <div className="flex items-center gap-2.5">
           <span className="relative flex h-2.5 w-2.5">
             {connected && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[rgb(0,255,190)] opacity-50" />}
@@ -61,7 +61,7 @@ export default function LiveFeeds() {
           </span>
           <span className="text-xs font-medium text-foreground">{connected ? "Stream connected" : "Reconnecting..."}</span>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted">
+        <div className="flex w-full items-center gap-1.5 text-xs text-muted sm:w-auto">
           {connected ? <SignalHigh className="h-3.5 w-3.5 text-[rgb(0,255,190)]" /> : <Radio className="h-3.5 w-3.5" />}
           {feeds.length > 0 && `${feeds.length} camera${feeds.length !== 1 ? "s" : ""}`}
         </div>

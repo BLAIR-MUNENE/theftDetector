@@ -23,6 +23,10 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") {
     return;
   }
+  const requestUrl = new URL(event.request.url);
+  if (requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") {
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cached) => {
@@ -37,7 +41,10 @@ self.addEventListener("fetch", (event) => {
           }
 
           const cloned = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cloned));
+          caches
+            .open(CACHE_NAME)
+            .then((cache) => cache.put(event.request, cloned))
+            .catch(() => {});
           return response;
         })
         .catch(() => caches.match("/"));

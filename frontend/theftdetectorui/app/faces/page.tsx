@@ -6,12 +6,12 @@ export default async function FacesPage() {
   const faces = await fetchFaces();
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="font-headline text-4xl font-bold tracking-tight text-foreground">
+    <div className="space-y-5 sm:space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl lg:text-4xl">
           Face Registry
         </h1>
-        <div className="flex items-center gap-3">
+        <div className="hidden items-center gap-3 sm:flex">
           <button type="button" aria-label="All faces" className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/[0.05] text-foreground/80 ring-1 ring-white/10 transition hover:bg-white/10 hover:text-foreground">
             <Users className="h-5 w-5" strokeWidth={1.75} />
           </button>

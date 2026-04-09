@@ -1,3 +1,28 @@
+import os
+import logging
+import warnings
+
+# Suppress OpenCV/FFMPEG internal C++ warnings before importing cv2
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("theftguard")
+
+# face_recognition_models currently imports pkg_resources, which triggers a
+# deprecation warning with newer setuptools versions. We constrain setuptools in
+# tracked dependencies and suppress this single known third-party warning so
+# startup logs remain actionable.
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API\.",
+    category=UserWarning,
+    module=r"face_recognition_models(\..*)?$",
+)
+
 import cv2
 import asyncio
 import base64
@@ -8,7 +33,6 @@ from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 import numpy as np
 import time
-import os
 import shutil
 from datetime import datetime
 import json
@@ -19,6 +43,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 import requests
+import traceback
 from pydantic import BaseModel
 import sqlite3
 import pickle
@@ -29,9 +54,22 @@ try:
     FACE_REC_AVAILABLE = True
 except ImportError:
     FACE_REC_AVAILABLE = False
-    print("face_recognition not installed. Face ID disabled.")
+    logger.warning("face_recognition not installed. Face recognition disabled.")
 
 def startup_runtime():
+    try:
+        reconcile_stale_training_jobs()
+    except Exception as exc:
+        logger.warning(f"Training job reconciliation skipped: {exc}")
+    try:
+        init_db()
+    except Exception as exc:
+        logger.warning(f"Database initialization skipped: {exc}")
+    try:
+        # `load_known_faces` is a no-op if face_recognition isn't installed.
+        load_known_faces()
+    except Exception as exc:
+        logger.warning(f"Face registry load skipped: {exc}")
     try:
         startup_sources = [{"name": c.name, "source": c.source} for c in getattr(current_settings, "cameraSources", [])]
     except Exception:
@@ -96,11 +134,9 @@ def init_db():
                      (id TEXT PRIMARY KEY, job_id TEXT, ts TEXT, level TEXT, message TEXT)''')
         conn.commit()
         conn.close()
-        print("Database initialized.")
+        logger.info("Database initialized.")
     except Exception as e:
-        print(f"Database error: {e}")
-
-init_db()
+        logger.error(f"Database initialization failed: {e}")
 
 # --- Settings & Models ---
 SETTINGS_FILE = "settings.json"
@@ -123,6 +159,9 @@ class SettingsModel(BaseModel):
     showHeatmap: bool = False
     cameraSources: list[CameraSourceModel] = []
     activeDetectionModel: str = "yolov8"
+    # When set to an existing .pt path, inference uses these weights for the object detector.
+    activeObjectWeightsYolov8: str = ""
+    activeObjectWeightsYolov26: str = ""
 
 # --- Model Configurations ---
 MODEL_CONFIGS: dict = {
@@ -140,25 +179,63 @@ MODEL_CONFIGS: dict = {
     },
 }
 
+MODELS_DIR = "models"
+if not os.path.exists(MODELS_DIR):
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
+
+def get_object_weights_override_path(model_name: str) -> str | None:
+    """Return promoted/custom object-detector weights path if configured and valid."""
+    try:
+        key = (model_name or "yolov8").strip().lower()
+        if key == "yolov26":
+            p = (getattr(current_settings, "activeObjectWeightsYolov26", "") or "").strip()
+        else:
+            p = (getattr(current_settings, "activeObjectWeightsYolov8", "") or "").strip()
+        if p and os.path.isfile(p):
+            return p
+    except Exception:
+        pass
+    return None
+
+
+def detection_models_signature(model_name: str) -> tuple[str, str]:
+    """Signature for hot-reload when family or promoted weights path changes."""
+    fam = (model_name or "yolov8").strip().lower()
+    if fam not in MODEL_CONFIGS:
+        fam = "yolov8"
+    ov = get_object_weights_override_path(fam) or ""
+    return (fam, ov)
+
+
 def load_detection_models(model_name: str):
     """Load pose and object detection models for the given model family."""
     cfg = MODEL_CONFIGS.get(model_name, MODEL_CONFIGS["yolov8"])
     model_pose = YOLO(cfg["pose"])
+    override = get_object_weights_override_path(model_name)
+    if override:
+        try:
+            model_obj = YOLO(override)
+            logger.info(f"Using custom/promoted object weights: {override}")
+            return model_pose, model_obj, False
+        except Exception as exc:
+            logger.warning(f"Failed to load custom object weights ({override}), using defaults: {exc}")
+
     model_is_specialized = False
     model_obj = None
     try:
         model_obj = YOLO(cfg["obj_primary"])
         if cfg.get("specialized", False):
             model_is_specialized = True
-            print(f"Specialized model loaded: {cfg['obj_primary']}")
+            logger.info(f"Specialized model loaded: {cfg['obj_primary']}")
         else:
-            print(f"Detection model loaded: {cfg['obj_primary']}")
+            logger.info(f"Detection model loaded: {cfg['obj_primary']}")
     except Exception:
-        print(f"Primary model '{cfg['obj_primary']}' not found, using fallback '{cfg['obj_fallback']}'")
+        logger.warning(f"Primary model '{cfg['obj_primary']}' not found, using fallback '{cfg['obj_fallback']}'")
         try:
             model_obj = YOLO(cfg["obj_fallback"])
         except Exception as e:
-            print(f"Fallback model also failed: {e}")
+            logger.error(f"Fallback model also failed: {e}")
             model_obj = None
     return model_pose, model_obj, model_is_specialized
 
@@ -169,9 +246,9 @@ if not os.path.exists(SETTINGS_FILE):
     if os.path.exists(SETTINGS_EXAMPLE_FILE):
         import shutil
         shutil.copy(SETTINGS_EXAMPLE_FILE, SETTINGS_FILE)
-        print(f"[SETUP] Created {SETTINGS_FILE} from {SETTINGS_EXAMPLE_FILE}. Configure your cameras in {SETTINGS_FILE}.")
+        logger.info(f"Created {SETTINGS_FILE} from {SETTINGS_EXAMPLE_FILE}. Configure your cameras in {SETTINGS_FILE}.")
     else:
-        print(f"[SETUP] No {SETTINGS_FILE} found. Using defaults.")
+        logger.warning(f"{SETTINGS_FILE} not found. Using defaults.")
 
 try:
     if os.path.exists(SETTINGS_FILE):
@@ -248,11 +325,16 @@ def load_known_faces():
             known_face_names.append(name)
             known_face_types.append(f_type)
         conn.close()
-        print(f"Loaded {len(known_face_names)} faces.")
+        logger.info(f"Loaded {len(known_face_names)} face(s) from database.")
     except Exception as e:
-        print(f"Error loading faces: {e}")
+        logger.error(f"Failed to load faces: {e}")
 
-load_known_faces()
+try:
+    # Avoid running DB/face initialization at import-time (Windows training subprocesses can
+    # re-import this module). Initialization happens in `startup_runtime()`.
+    pass
+except Exception:
+    pass
 
 # --- API Endpoints ---
 # ... (Keep existing settings/roi/history endpoints) ...
@@ -329,7 +411,7 @@ async def save_settings(settings: SettingsModel):
     current_settings = settings
     roi_points = settings.roiPoints # Update global ROI
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings.dict(), f, indent=4)
+        json.dump(settings.model_dump(), f, indent=4)
     return {"status": "success", "message": "Settings saved"}
 
 @app.post("/roi")
@@ -339,8 +421,8 @@ async def save_roi(data: dict):
         roi_points = data["points"]
         current_settings.roiPoints = roi_points
         with open(SETTINGS_FILE, "w") as f:
-            json.dump(current_settings.dict(), f, indent=4)
-        print(f"ROI Updated: {roi_points}")
+            json.dump(current_settings.model_dump(), f, indent=4)
+        logger.info(f"ROI updated: {roi_points}")
         return {"status": "success"}
     return {"status": "error"}
 
@@ -403,11 +485,16 @@ def load_known_faces():
             known_face_names.append(name)
             known_face_types.append(f_type)
         conn.close()
-        print(f"Loaded {len(known_face_names)} faces.")
+        logger.info(f"Loaded {len(known_face_names)} face(s) from database.")
     except Exception as e:
-        print(f"Error loading faces: {e}")
+        logger.error(f"Failed to load faces: {e}")
 
-load_known_faces()
+try:
+    # Avoid running DB/face initialization at import-time (Windows training subprocesses can
+    # re-import this module). Initialization happens in `startup_runtime()`.
+    pass
+except Exception:
+    pass
 
 @app.post("/faces/register")
 async def register_face(file: UploadFile = File(...), name: str = Form(...), type: str = Form("blacklist")):
@@ -528,14 +615,14 @@ class CameraManager:
                     "retry_after": 0.0,
                     "last_objects": [],
                 }
-                print(f"Kamera eklendi: {name} ({source}) ID: {cam_id}")
+                logger.info(f"Camera added: {name} ({source}) ID: {cam_id}")
                 return {"id": cam_id, "status": "connected", "lastError": None}
 
         try:
             cap.release()
         except Exception:
             pass
-        print(f"Kamera açılamadı: {source}")
+        logger.warning(f"Failed to open camera: {source}")
         return {"id": None, "status": "failed", "lastError": error}
 
     def replace_all(self, sources: list[dict], fallback_webcam: bool = True):
@@ -566,7 +653,14 @@ class CameraManager:
                     continue
 
             if fallback_webcam and not added_any:
-                self.add_camera("0", "Kamera 1")
+                try:
+                    res = self.add_camera("0", "Camera 1")
+                    if not res.get("id"):
+                        logger.warning("No camera sources configured and webcam index 0 is unavailable. "
+                                       "Running in camera-less mode — dashboard will remain accessible.")
+                except Exception as e:
+                    logger.warning(f"Webcam fallback failed: {e}. "
+                                   "Running in camera-less mode — dashboard will remain accessible.")
 
     def remove_camera(self, cam_id):
         with self.lock:
@@ -695,6 +789,11 @@ class TrainingArtifactResponse(BaseModel):
     createdAt: str
     promoted: bool = False
     metrics: dict | None = None
+
+
+class PromoteArtifactBody(BaseModel):
+    """Optional hint when promoting weights (inferred from training job if omitted)."""
+    modelFamily: str | None = None
 
 class TrainingLogResponse(BaseModel):
     id: str
@@ -963,6 +1062,132 @@ def get_latest_training_artifact(job_id: str, kind: str) -> sqlite3.Row | None:
     conn.close()
     return row
 
+
+def reconcile_stale_training_jobs():
+    """Mark jobs that were running/stopping when the process died as orphaned."""
+    now = datetime.now().isoformat()
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT id FROM training_jobs WHERE status IN ('running', 'stopping')")
+    ids = [r["id"] for r in c.fetchall()]
+    conn.close()
+    for jid in ids:
+        update_training_job(
+            jid,
+            status="orphaned",
+            phase="Interrupted",
+            finished_at=now,
+            error="Backend restarted while this job was active. Start a new job or resume from a checkpoint if available.",
+            cancel_requested=0,
+        )
+        append_training_log(jid, "WARN", "Job marked orphaned after backend restart.")
+    if ids:
+        logger.warning("Reconciled %d training job(s) that were active before restart.", len(ids))
+
+
+def claim_next_training_job() -> sqlite3.Row | None:
+    """Atomically claim the oldest queued job as running (single-worker safe)."""
+    conn = db_connect(row_factory=True)
+    c = conn.cursor()
+    c.execute("SELECT id FROM training_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1")
+    peek = c.fetchone()
+    if not peek:
+        conn.close()
+        return None
+    job_id = peek["id"]
+    now = datetime.now().isoformat()
+    c.execute(
+        """UPDATE training_jobs SET status='running', progress=0.05, phase='Preparing dataset',
+           started_at=?, error=NULL WHERE id=? AND status='queued'""",
+        (now, job_id),
+    )
+    if c.rowcount != 1:
+        conn.close()
+        return None
+    c.execute(
+        "SELECT id, dataset_id, base_model, task_type, params_json, device FROM training_jobs WHERE id=?",
+        (job_id,),
+    )
+    row = c.fetchone()
+    conn.commit()
+    conn.close()
+    return row
+
+
+def validate_base_model_for_training(base_model: str) -> None:
+    bm = (base_model or "").strip()
+    if not bm:
+        raise HTTPException(status_code=400, detail="baseModel is required.")
+    if os.path.isfile(bm):
+        pass
+    elif any(sep in bm for sep in ("/", "\\")) or (len(bm) > 2 and bm[1] == ":"):
+        raise HTTPException(status_code=400, detail=f"Base model file not found: {bm}")
+    try:
+        _ = YOLO(bm)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot load base model '{bm}'. Use a valid Ultralytics model name or an existing .pt file. ({e})",
+        )
+
+
+def _safe_unlink_training_artifact_path(path: str | None) -> None:
+    if not path or not os.path.isfile(path):
+        return
+    ap = os.path.normcase(os.path.abspath(path))
+    roots = [
+        os.path.normcase(os.path.abspath(TRAINING_ARTIFACTS_DIR)),
+        os.path.normcase(os.path.abspath(TRAINING_WORKSPACE_DIR)),
+        os.path.normcase(os.path.abspath(TRAINING_UPLOADS_DIR)),
+    ]
+    for root in roots:
+        if ap.startswith(root + os.sep) or ap == root:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return
+
+
+def resolve_training_weight_paths(job_id: str, save_dir: str | None) -> tuple[str | None, str | None, list[str]]:
+    """
+    Resolve best/last weight paths across known Ultralytics output layouts.
+    Returns: (best_path, last_path, checked_weights_dirs)
+    """
+    checked_dirs: list[str] = []
+    candidate_weight_dirs: list[str] = []
+
+    if save_dir:
+        candidate_weight_dirs.append(os.path.join(str(save_dir), "weights"))
+    candidate_weight_dirs.append(os.path.join(TRAINING_WORKSPACE_DIR, job_id, "weights"))
+    candidate_weight_dirs.append(os.path.join("runs", "detect", TRAINING_WORKSPACE_DIR, job_id, "weights"))
+
+    # De-duplicate after normalization to avoid repeated filesystem checks.
+    seen: set[str] = set()
+    deduped_dirs: list[str] = []
+    for d in candidate_weight_dirs:
+        nd = os.path.normcase(os.path.abspath(d))
+        if nd in seen:
+            continue
+        seen.add(nd)
+        deduped_dirs.append(d)
+
+    best_path = None
+    last_path = None
+    for weight_dir in deduped_dirs:
+        checked_dirs.append(os.path.abspath(weight_dir))
+        best_candidate = os.path.join(weight_dir, "best.pt")
+        last_candidate = os.path.join(weight_dir, "last.pt")
+        if best_path is None and os.path.isfile(best_candidate):
+            best_path = os.path.abspath(best_candidate)
+        if last_path is None and os.path.isfile(last_candidate):
+            last_path = os.path.abspath(last_candidate)
+        if best_path and last_path:
+            break
+
+    return best_path, last_path, checked_dirs
+
+
 class TrainingWorker:
     def __init__(self):
         self.thread = None
@@ -1023,35 +1248,17 @@ class TrainingWorker:
 
     def run(self):
         while not self.stop_event.is_set():
-            job = self._next_job()
+            job = claim_next_training_job()
             if not job:
                 self.wake_event.wait(timeout=2.0)
                 self.wake_event.clear()
                 continue
             self._execute_job(job)
 
-    def _next_job(self):
-        conn = db_connect(row_factory=True)
-        c = conn.cursor()
-        c.execute(
-            "SELECT id, dataset_id, base_model, task_type, params_json, device FROM training_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
-        )
-        row = c.fetchone()
-        conn.close()
-        return row
-
     def _execute_job(self, row):
         job_id = row["id"]
         params = json.loads(row["params_json"]) if row["params_json"] else {}
         self.active_job_id = job_id
-        update_training_job(
-            job_id,
-            status="running",
-            progress=0.05,
-            phase="Preparing dataset",
-            started_at=datetime.now().isoformat(),
-            error=None,
-        )
         append_training_log(job_id, "INFO", "Training job started.")
 
         dataset = get_training_dataset_or_404(row["dataset_id"])
@@ -1115,26 +1322,35 @@ class TrainingWorker:
                 "batch": batch,
                 "device": device,
                 "patience": patience,
+                # On Windows, Ultralytics dataloader workers spawn new Python processes which
+                # can re-import `backend.py` when running the server via `python backend.py`.
+                # Using workers=0 avoids repeated top-level initialization logs and prevents
+                # accidental duplicate startup side effects.
+                "workers": 0,
                 "project": TRAINING_WORKSPACE_DIR,
                 "name": job_id,
                 "exist_ok": True,
                 "val": True,
             }
             if resume_checkpoint:
-                train_kwargs = {"resume": True}
+                train_kwargs["resume"] = True
 
             results = model.train(**train_kwargs)
 
-            best_path = None
-            last_path = None
+            save_dir = None
             try:
-                save_dir = getattr(results, "save_dir", None)
-                if save_dir:
-                    best_path = os.path.join(str(save_dir), "weights", "best.pt")
-                    last_path = os.path.join(str(save_dir), "weights", "last.pt")
+                save_dir = str(getattr(results, "save_dir", "") or "").strip() or None
             except Exception:
-                best_path = None
-                last_path = None
+                save_dir = None
+
+            best_path, last_path, checked_weight_dirs = resolve_training_weight_paths(job_id, save_dir)
+            if save_dir:
+                append_training_log(job_id, "INFO", f"Training save directory reported by Ultralytics: {os.path.abspath(save_dir)}")
+            append_training_log(
+                job_id,
+                "INFO",
+                "Checked weight directories: " + " | ".join(checked_weight_dirs),
+            )
 
             if last_path and os.path.exists(last_path):
                 create_training_artifact(
@@ -1143,6 +1359,7 @@ class TrainingWorker:
                     last_path,
                     {"epochs": epochs, "imgsz": imgsz, "batch": batch},
                 )
+                append_training_log(job_id, "INFO", f"Resume checkpoint recorded: {last_path}")
 
             if self._should_cancel(job_id):
                 update_training_job(
@@ -1158,10 +1375,14 @@ class TrainingWorker:
                 return
 
             if not best_path or not os.path.exists(best_path):
-                raise RuntimeError("Training finished but no best.pt artifact was produced.")
+                raise RuntimeError(
+                    "Training finished but best.pt could not be found in expected output directories. "
+                    "Inspect training logs for checked paths."
+                )
 
-            promoted_path = os.path.join(TRAINING_ARTIFACTS_DIR, f"{job_id}_best.pt")
+            promoted_path = os.path.abspath(os.path.join(TRAINING_ARTIFACTS_DIR, f"{job_id}_best.pt"))
             shutil.copy2(best_path, promoted_path)
+            append_training_log(job_id, "INFO", f"Best weights copied from {best_path} to {promoted_path}")
 
             metrics = {
                 "epochs": epochs,
@@ -1185,6 +1406,7 @@ class TrainingWorker:
             )
             append_training_log(job_id, "INFO", f"Training completed. Artifact saved to {promoted_path}.")
         except Exception as e:
+            tb = traceback.format_exc()
             update_training_job(
                 job_id,
                 status="failed",
@@ -1195,6 +1417,7 @@ class TrainingWorker:
                 cancel_requested=0,
             )
             append_training_log(job_id, "ERROR", str(e))
+            append_training_log(job_id, "ERROR", tb)
         finally:
             self.active_job_id = None
             self.active_model = None
@@ -1542,6 +1765,7 @@ async def create_training_job(payload: CreateTrainingJobInput):
             raise HTTPException(status_code=400, detail=inspection.message or f"Dataset is not ready for training: {dataset['status']}")
     if dataset["status"] not in ("ready", "validated"):
         raise HTTPException(status_code=400, detail=f"Dataset is not ready for training: {dataset['status']}")
+    validate_base_model_for_training(payload.baseModel)
     resolved_device = require_usable_training_device(payload.device)
 
     job_id = str(uuid.uuid4())
@@ -1628,6 +1852,31 @@ async def cancel_training_job(job_id: str):
     return {"message": "Stop requested. Training will stop after the current safe checkpoint."}
 
 
+@app.delete("/training/jobs/{job_id}")
+async def delete_training_job(job_id: str):
+    row = get_training_job_row(job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Training job not found")
+    st = row["status"]
+    if st in ("running", "stopping"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a job that is running or stopping. Cancel it first, then delete the record.",
+        )
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute("SELECT path FROM training_artifacts WHERE job_id = ?", (job_id,))
+    paths = [r[0] for r in c.fetchall()]
+    c.execute("DELETE FROM training_logs WHERE job_id = ?", (job_id,))
+    c.execute("DELETE FROM training_artifacts WHERE job_id = ?", (job_id,))
+    c.execute("DELETE FROM training_jobs WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+    for p in paths:
+        _safe_unlink_training_artifact_path(p)
+    return {"message": "Job deleted."}
+
+
 @app.post("/training/jobs/{job_id}/resume", response_model=ResumeTrainingJobResponse)
 async def resume_training_job(job_id: str):
     row = get_training_job_row(job_id)
@@ -1679,7 +1928,8 @@ async def list_training_artifacts():
     return [TrainingArtifactResponse(**row_to_training_artifact(row)) for row in rows]
 
 @app.post("/training/artifacts/{artifact_id}/promote")
-async def promote_training_artifact(artifact_id: str):
+async def promote_training_artifact(artifact_id: str, body: PromoteArtifactBody = PromoteArtifactBody()):
+    global current_settings
     conn = db_connect(row_factory=True)
     c = conn.cursor()
     c.execute("SELECT * FROM training_artifacts WHERE id = ?", (artifact_id,))
@@ -1687,11 +1937,44 @@ async def promote_training_artifact(artifact_id: str):
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Artifact not found")
+    src = row["path"]
+    if not src or not os.path.isfile(src):
+        conn.close()
+        raise HTTPException(status_code=400, detail="Artifact file is missing on disk.")
+
+    job_row = get_training_job_row(row["job_id"])
+    family = (body.modelFamily or "").strip().lower()
+    if family not in ("yolov8", "yolov26"):
+        bm = (job_row["base_model"] or "").lower() if job_row else ""
+        family = "yolov26" if "yolo26" in bm or "yolov26" in bm else "yolov8"
+
+    dest = os.path.abspath(os.path.join(MODELS_DIR, f"active_object_{family}.pt"))
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    shutil.copy2(src, dest)
+
+    if family == "yolov26":
+        current_settings.activeObjectWeightsYolov26 = dest
+    else:
+        current_settings.activeObjectWeightsYolov8 = dest
+
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(current_settings.model_dump(), f, indent=4)
+    except Exception as exc:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Failed to save settings: {exc}") from exc
+
     c.execute("UPDATE training_artifacts SET promoted = 0")
     c.execute("UPDATE training_artifacts SET promoted = 1 WHERE id = ?", (artifact_id,))
     conn.commit()
     conn.close()
-    return {"message": "Artifact marked as promoted candidate."}
+    logger.info("Promoted training artifact %s → %s (family=%s)", artifact_id, dest, family)
+    return {
+        "message": f"Artifact promoted. Object detector for {family} now uses {dest}. "
+        "Live detection reloads on the next cycle.",
+        "path": dest,
+        "modelFamily": family,
+    }
 
 @app.post("/cameras")
 async def add_new_camera(cam: CameraInput):
@@ -1751,7 +2034,7 @@ async def configure_startup_cameras(cfg: CameraConfigInput):
     current_settings.cameraSources = cfg.cameraSources
     try:
         with open(SETTINGS_FILE, "w") as f:
-            json.dump(current_settings.dict(), f, indent=4)
+            json.dump(current_settings.model_dump(), f, indent=4)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write settings: {e}")
 
@@ -1916,34 +2199,36 @@ def check_bending(keypoints):
 def video_loop():
     global roi_points, latest_frame, current_settings, alert_payload, known_face_encodings, known_face_names, known_face_types, person_states
 
-    print("Video Loop Başlatılıyor...")
+    logger.info("Starting video loop...")
 
-    _loaded_model_name = current_settings.activeDetectionModel
+    _loaded_sig = detection_models_signature(current_settings.activeDetectionModel)
     try:
-        print(f"Loading models for: {_loaded_model_name}")
-        model_pose, model_obj, model_is_specialized = load_detection_models(_loaded_model_name)
-        print("Models ready.")
+        logger.info(f"Loading models for: {_loaded_sig[0]} (override={_loaded_sig[1] or 'none'})")
+        model_pose, model_obj, model_is_specialized = load_detection_models(_loaded_sig[0])
+        logger.info("Models ready.")
     except Exception as e:
-        print(f"CRITICAL MODEL ERROR: {e}")
+        logger.critical(f"Model load failed: {e}")
         with open("error_log.txt", "a") as f:
             f.write(f"{datetime.now()}: CRITICAL LOAD ERROR: {e}\n")
         return
 
     frame_count = 0
     no_signal_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-    cv2.putText(no_signal_frame, "SINYAL YOK", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+    cv2.putText(no_signal_frame, "NO SIGNAL", (400, 360), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
 
     while True:
-        # Hot-swap models when activeDetectionModel setting changes
-        desired_model = current_settings.activeDetectionModel
-        if desired_model != _loaded_model_name:
+        # Hot-swap when detection family or promoted object weights change
+        desired_sig = detection_models_signature(current_settings.activeDetectionModel)
+        if desired_sig != _loaded_sig:
             try:
-                print(f"Switching detection model: {_loaded_model_name} → {desired_model}")
-                model_pose, model_obj, model_is_specialized = load_detection_models(desired_model)
-                _loaded_model_name = desired_model
-                print(f"Model switched to: {desired_model}")
+                logger.info(
+                    f"Switching detection models: {_loaded_sig} → {desired_sig}"
+                )
+                model_pose, model_obj, model_is_specialized = load_detection_models(desired_sig[0])
+                _loaded_sig = desired_sig
+                logger.info("Detection models reloaded.")
             except Exception as _e:
-                print(f"Model switch failed, keeping {_loaded_model_name}: {_e}")
+                logger.error(f"Model switch failed, keeping previous weights: {_e}")
 
         try:
             with camera_manager.lock:
@@ -2192,20 +2477,19 @@ def video_loop():
                 })
             
             frame_count += 1
-            if frames_payload:
-                with lock:
-                    latest_frame = {
-                        "type": "multi_frame",
-                        "cameras": frames_payload,
-                        "alert": alert_payload,
-                        "audio": "siren" if alert_payload else None,
-                        "generatedAt": datetime.now().isoformat(),
-                    }
+            with lock:
+                latest_frame = {
+                    "type": "multi_frame",
+                    "cameras": frames_payload,
+                    "alert": alert_payload,
+                    "audio": "siren" if alert_payload else None,
+                    "generatedAt": datetime.now().isoformat(),
+                }
 
             time.sleep(0.04 if ws_client_count > 0 else 0.12) 
 
         except Exception as e:
-            print(f"Loop Error: {e}")
+            logger.error(f"Video loop error: {e}")
             with open("error_log.txt", "a") as f:
                 f.write(f"{datetime.now()}: Loop Runtime Error: {e}\n")
             time.sleep(1)
@@ -2214,7 +2498,7 @@ def video_loop():
 def trigger_alert(cam_id, cam_name, message, frame):
     global alert_payload
     try:
-        print(f"ALERT: {message}")
+        logger.info(f"Alert triggered: {message}")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"alerts/alert_{cam_id}_{timestamp}.jpg"
         cv2.imwrite(filename, frame)
@@ -2241,7 +2525,7 @@ def trigger_alert(cam_id, cam_name, message, frame):
         threading.Thread(target=send_notifications, args=(message, filename)).start()
         
     except Exception as e:
-        print(f"Alert Error: {e}")
+        logger.error(f"Alert dispatch failed: {e}")
 
 def send_notifications(message, image_path):
     # Quick implementation of notification sending based on current_settings
@@ -2261,7 +2545,7 @@ async def websocket_endpoint(websocket: WebSocket):
     global ws_client_count
     await websocket.accept()
     ws_client_count += 1
-    print("Client connected")
+    logger.info("WebSocket client connected")
     last_sent = None
     try:
         while True:
@@ -2277,9 +2561,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             await asyncio.sleep(0.08) 
     except WebSocketDisconnect:
-        print("Client disconnected")
+        logger.info("WebSocket client disconnected")
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"WebSocket error: {e}")
     finally:
         ws_client_count = max(0, ws_client_count - 1)
 

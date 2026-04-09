@@ -10,7 +10,8 @@ import {
   fetchTrainingJobs,
   fetchTrainingLogs,
 } from "@/lib/api";
-import type { TrainingArtifact, TrainingDataset, TrainingJob, TrainingLog } from "@/lib/types";
+import { getLatestFinishedJobId } from "@/lib/training-session";
+import type { TrainingDataset, TrainingJob, TrainingLog } from "@/lib/types";
 
 export default function TrainPage() {
   const [datasets, setDatasets] = useState<TrainingDataset[]>([]);
@@ -22,9 +23,22 @@ export default function TrainPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   const hasActiveJob = useMemo(
-    () => jobs.some((job) => job.status === "queued" || job.status === "running"),
+    () =>
+      jobs.some((job) =>
+        ["queued", "running", "stopping"].includes(job.status)
+      ),
     [jobs]
   );
+
+  const latestFinishedJobId = useMemo(
+    () => getLatestFinishedJobId(jobs),
+    [jobs]
+  );
+
+  const artifactsForLatestSession = useMemo(() => {
+    if (!latestFinishedJobId) return [];
+    return artifacts.filter((a) => a.jobId === latestFinishedJobId);
+  }, [artifacts, latestFinishedJobId]);
 
   const refresh = useCallback(async () => {
     const [nextDatasets, nextJobs, nextArtifacts] = await Promise.all([
@@ -116,7 +130,8 @@ export default function TrainPage() {
       <TrainJobs
         jobs={jobs}
         logs={logs}
-        artifacts={artifacts}
+        artifacts={artifactsForLatestSession}
+        latestFinishedJobId={latestFinishedJobId}
         selectedJobId={selectedJobId}
         onSelectJob={setSelectedJobId}
         onRefresh={refresh}

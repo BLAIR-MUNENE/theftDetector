@@ -198,7 +198,7 @@ Place a `shoplifting.pt` weights file in the project root. The backend will use 
 
 ## Running
 
-### Backend
+### Legacy Backend (FastAPI)
 
 ```bash
 python backend.py
@@ -228,6 +228,34 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+### Recreated Backend (Django + ASGI WebSocket)
+
+Use ASGI for live stream support (`/ws`). Do not use `manage.py runserver` when validating live camera WebSocket behavior.
+
+```bash
+# from repository root
+.venv\Scripts\python -m uvicorn backend.theftdetectorbackend.asgi:application --host 127.0.0.1 --port 8000 --reload
+
+# or from backend/ directory
+..\venv\Scripts\python -m uvicorn theftdetectorbackend.asgi:application --host 127.0.0.1 --port 8000 --reload
+```
+
+If you only need migration/admin checks, `python manage.py runserver` still works for HTTP APIs, but WebSocket troubleshooting should use Uvicorn.
+
+### Recreated Frontend (`frontend/theftdetectorui`)
+
+```bash
+cd frontend/theftdetectorui
+npm install
+npm run dev
+```
+
+Set API host in `frontend/theftdetectorui/.env.local`:
+
+```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+```
 
 ---
 

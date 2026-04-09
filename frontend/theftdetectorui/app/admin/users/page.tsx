@@ -53,11 +53,11 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">User Management</h1>
+      <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">User Management</h1>
       {msg && <p className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-foreground">{msg}</p>}
       <div className="space-y-2">
         {users.map((u) => (
-          <div key={u.id} className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] p-4">
+          <div key={u.id} className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-4">
             <div>
               <p className="font-medium text-foreground">{u.fullName || u.username}</p>
               <p className="text-xs text-muted">{u.email} • {u.role}</p>

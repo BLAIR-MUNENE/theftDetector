@@ -51,25 +51,25 @@ export default async function SurveillanceDashboard() {
   ];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <header>
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">Live surveillance</h1>
+        <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Live surveillance</h1>
         <p className="mt-1 text-sm text-muted">
           WebSocket stream from the Django API. Start{" "}
           <code className="rounded-lg bg-white/[0.07] px-1 py-0.5 text-foreground">python manage.py runserver</code>{" "}
           (ASGI) first.
         </p>
       </header>
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         {statCards.map(({ label, value, icon: Icon, color, ring, iconColor, glow }) => (
           <div
             key={label}
-            className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 backdrop-blur-xl transition hover:bg-white/[0.05]"
+            className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 backdrop-blur-xl transition hover:bg-white/[0.05] sm:p-5"
           >
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
-                <p className="mt-2 text-3xl font-bold tracking-tight text-foreground">{value}</p>
+                <p className="mt-2 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{value}</p>
               </div>
               <div
                 style={{ background: color, boxShadow: glow, border: `1px solid ${ring}` }}

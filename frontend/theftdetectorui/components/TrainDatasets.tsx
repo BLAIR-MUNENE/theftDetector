@@ -108,7 +108,7 @@ export default function TrainDatasets({ datasets, selectedDatasetId, onSelectDat
         <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Datasets</h2>
         <p className="mt-1 text-sm text-muted">Upload an archive or register an existing local path, then validate it before training.</p>
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2">
         <div className="space-y-4">
           <h3 className="text-sm font-medium text-foreground">Upload archive</h3>
           <input type="file" accept=".zip,.tar,.gz,.tgz,.yaml,.yml" className="block w-full text-sm text-muted file:mr-3 file:rounded-xl file:border-0 file:bg-white/[0.08] file:px-3 file:py-2 file:text-sm file:text-foreground hover:file:bg-white/[0.12]" onChange={(e) => setDatasetFile(e.target.files?.[0] ?? null)} />
@@ -130,7 +130,7 @@ export default function TrainDatasets({ datasets, selectedDatasetId, onSelectDat
         </div>
       </div>
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-medium text-foreground">Available datasets</h3>
           <button type="button" onClick={validateSelected} disabled={busy !== null || !selectedDataset} className="rounded-xl border border-white/[0.15] px-3 py-1.5 text-xs text-foreground transition hover:bg-white/[0.06] hover:border-white/25 disabled:opacity-50">{busy === "validate" ? "Validating..." : "Validate selected"}</button>
         </div>

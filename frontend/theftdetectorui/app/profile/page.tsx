@@ -55,14 +55,14 @@ export default function ProfilePage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">Profile</h1>
+      <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Profile</h1>
       {msg && <p className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-foreground">{msg}</p>}
       <section className="space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Profile settings</h2>
         <input className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" />
         <input className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
         <p className="text-xs text-muted">Role: {user?.isAdmin ? "Admin" : "User"}</p>
-        <button type="button" onClick={saveProfile} className="rounded-xl bg-[rgb(var(--accent-orange))] px-4 py-2 text-sm font-semibold text-white">Save profile</button>
+        <button type="button" onClick={saveProfile} className="w-full rounded-xl bg-[rgb(var(--accent-orange))] px-4 py-2 text-sm font-semibold text-white sm:w-auto">Save profile</button>
       </section>
       <section className="space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Security</h2>

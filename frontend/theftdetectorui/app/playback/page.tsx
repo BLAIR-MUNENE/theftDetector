@@ -173,9 +173,9 @@ export default function PlaybackPage() {
     "w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-foreground placeholder:text-muted/60 focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/[0.08]";
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
+    <div className="mx-auto max-w-3xl space-y-6 sm:space-y-8">
       <header>
-        <h1 className="font-headline text-3xl font-bold tracking-tight text-foreground">Playback testing</h1>
+        <h1 className="font-headline text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Playback testing</h1>
         <p className="mt-1 text-sm text-muted">
           Upload a recorded video to test detection on CPU without live RTSP lag. Alerts will appear in History.
         </p>
@@ -227,7 +227,7 @@ export default function PlaybackPage() {
         </button>
       </section>
       <section className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Jobs</h2>
           <button
             type="button"

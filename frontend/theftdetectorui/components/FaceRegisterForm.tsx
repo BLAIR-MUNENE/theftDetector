@@ -51,10 +51,10 @@ export default function FaceRegisterForm() {
     "w-full rounded-xl border border-white/[0.12] bg-black/30 px-4 py-3 text-sm text-foreground placeholder:text-muted/50 focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/[0.10] transition";
 
   return (
-    <form onSubmit={submit} className="glass glass-edge glass-shadow rounded-2xl px-6 py-7 space-y-6">
-      <h2 className="text-2xl font-bold text-foreground">Register face</h2>
+    <form onSubmit={submit} className="glass glass-edge glass-shadow space-y-6 rounded-2xl px-4 py-5 sm:px-6 sm:py-7">
+      <h2 className="text-xl font-bold text-foreground sm:text-2xl">Register face</h2>
       {msg && <p className="text-sm text-muted" role="status">{msg}</p>}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="face-name" className="block text-sm font-medium text-foreground/80">Name</label>
           <input id="face-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} />
@@ -64,12 +64,12 @@ export default function FaceRegisterForm() {
           <input id="face-group" className={inputCls} placeholder="blacklist" value={group} onChange={(e) => setGroup(e.target.value)} />
         </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <label htmlFor="face-file" className="cursor-pointer inline-flex items-center gap-2 rounded-xl border border-white/[0.18] bg-transparent px-5 py-2.5 text-sm font-medium text-foreground transition hover:bg-white/[0.06] hover:border-white/30">
           Choose File
           <input id="face-file" type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         </label>
-        {file && <span className="truncate max-w-[200px] text-xs text-muted">{file.name}</span>}
+        {file && <span className="max-w-full truncate text-xs text-muted sm:max-w-[200px]">{file.name}</span>}
         <button type="submit" disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-[rgb(var(--accent-orange))] px-7 py-2.5 text-sm font-semibold text-white shadow-[0_0_24px_rgba(255,107,0,0.45)] transition hover:brightness-110 hover:shadow-[0_0_32px_rgba(255,107,0,0.6)] disabled:opacity-50 disabled:shadow-none">
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
           Upload

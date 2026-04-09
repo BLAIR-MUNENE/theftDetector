@@ -9,9 +9,9 @@ export default function WeeklyChart({ data }: Props) {
   const chartData = labels.map((day, i) => ({ day, alerts: data[i] ?? 0 }));
 
   return (
-    <div className="h-64 w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 backdrop-blur-xl">
+    <div className="h-56 w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3 backdrop-blur-xl sm:h-64 sm:p-4">
       <p className="font-label mb-3 text-sm font-medium uppercase tracking-wide text-muted">Alerts - 7 days</p>
-      <div className="h-[190px] w-full min-w-0">
+      <div className="h-[165px] w-full min-w-0 sm:h-[190px]">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData}>
             <XAxis dataKey="day" tick={{ fill: "rgb(110 120 145)", fontSize: 11 }} axisLine={{ stroke: "rgba(45,50,70,0.8)" }} tickLine={false} />
